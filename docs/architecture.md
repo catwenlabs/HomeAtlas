@@ -122,8 +122,8 @@ Client ──> uvicorn (FastAPI app)
 - 文件存 `IMPORT_STORAGE_DIR`（默认 `/tmp/homeatlas-imports`），数据库仅存路径、
   大小与 SHA-256。预览会重建行数据，手工修正应在预览后完成。
 - 审计动作：`import.create/mapping/preview/confirm/execute/row_update/cancel/delete`。
-- 2B-2 才引入 NATS JetStream + Outbox + Import Worker 与共享文件卷；
-  2B-3 再补 Excel `.xlsx`、模糊去重、模板下载。
+- 2B-2 才引入 NATS JetStream + Outbox + Import Worker 与共享文件卷（**当前暂缓**，
+  继续使用 API 内同步执行）；2B-3 再补 Excel `.xlsx`、模糊去重、模板下载。
 
 ### 余额口径
 

@@ -2,7 +2,8 @@
 
 > 状态：**设计评审完成（2026-11-11）；Phase 2B-1 同步骨架已实现**。
 > 2B-1 已落地 CSV 上传、字段映射、同步预览、去重、人工确认与交易生成；
-> NATS/Worker 异步化（2B-2）与 Excel/模糊去重（2B-3）仍按本文后续章节推进。
+> 2B-2 异步化（NATS/Worker/Outbox）**已决定暂缓**，2B-3（Excel、模糊去重、
+> 模板下载）待排期。
 >
 > 依据：`specification.md` §8 Phase 1.5、§10 第二阶段 B；现有交易/余额/统计规则
 > 见 `architecture.md`、`database.md`。实现记录见本文 §15。
@@ -493,10 +494,11 @@ API ──写批次+outbox──> PostgreSQL
    - API：上传、映射、同步预览、同步确认、列表/详情/行查询/行修正/取消/删除
    - CSV 解析、映射、校验、去重、生成交易
    - 测试与文档
-2. **2B-2 异步化**
+2. **2B-2 异步化** ⏸ 暂缓（2026-11-11）
    - NATS JetStream、Outbox Publisher、Import Worker
    - 预览/执行投递、重试、DLQ、进度查询
    - Compose 增加 `nats`、`import-worker`、`import_data` volume
+   - 暂缓理由与触发条件见 `development-roadmap.md` Task 007「决策」小节
 3. **2B-3 增强**
    - Excel `.xlsx`
    - 模糊去重、批量修正、模板下载
