@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: homeatlas-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: home_atlas
+      POSTGRES_USER: homeatlas
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U homeatlas -d home_atlas"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ../apps/api
+    container_name: homeatlas-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${API_BIND:-127.0.0.1:8000}:8000"
+    networks:
+      - backend
+      - frontend
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  postgres_data:
+
+networks:
+  backend:
+    internal: true # postgres <-> api only, no published ports
+  frontend: # carries the api port publish; ports on internal networks are unreachable
