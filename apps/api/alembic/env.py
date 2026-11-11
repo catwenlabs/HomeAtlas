@@ -6,8 +6,10 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import app.models  # noqa: F401  (register all ORM models on Base.metadata)
 from alembic import context
 from app.core.config import get_settings
+from app.core.db import Base
 
 config = context.config
 
@@ -18,8 +20,8 @@ if config.config_file_name is not None:
 # so migrations always target the same database as the application.
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
-# Business model metadata is registered here from Phase 1.1 onwards.
-target_metadata = None
+# Business model metadata is registered by importing app.models below.
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:

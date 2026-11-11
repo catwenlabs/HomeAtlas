@@ -91,3 +91,33 @@ async def db_client(db_app: FastAPI) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=db_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as http:
         yield http
+
+
+@pytest.fixture
+async def clean_db(db_app: FastAPI) -> AsyncIterator[None]:
+    """Wipe all business rows between tests; currency seed stays in place."""
+    async with db_app.state.db_session_factory() as session:
+        await session.execute(
+            text(
+                "TRUNCATE TABLE system.import_rows, system.import_batches, "
+                "system.audit_logs, core.account_balances, "
+                "finance.transactions, finance.transfers, finance.categories, "
+                "core.accounts, core.households RESTART IDENTITY CASCADE"
+            )
+        )
+        await session.commit()
+    yield
+
+
+@pytest.fixture
+async def household(db_client: AsyncClient, clean_db: None) -> dict:
+    response = await db_client.post(
+        "/api/v1/households", json={"name": "测试家庭", "base_currency": "CNY"}
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["data"]
+
+
+@pytest.fixture
+def household_headers(household: dict) -> dict[str, str]:
+    return {"X-Household-Id": household["id"]}

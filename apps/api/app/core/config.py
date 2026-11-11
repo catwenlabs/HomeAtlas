@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     postgres_password: str = "homeatlas"  # noqa: S105
     postgres_db: str = "home_atlas"
 
+    # Data import (Phase 2B-1 sync skeleton). The directory is local to the API
+    # process; Phase 2B-2 will move files to a shared worker volume.
+    import_storage_dir: str = "/tmp/homeatlas-imports"  # noqa: S108
+    import_max_file_mb: int = 10
+    import_max_rows: int = 20000
+
     @property
     def database_url(self) -> str:
         return (
