@@ -926,15 +926,15 @@ async def test_file_validation_limits(
 
 
 async def test_household_isolation_listing_and_account_scope(
-    db_client: AsyncClient, household_headers: dict[str, str], household: dict
+    db_client: AsyncClient,
+    household_headers: dict[str, str],
+    household: dict,
+    auth_for_household: Any,
+    create_household: Any,
 ) -> None:
     account = await _create_account(db_client, household_headers)
-    other = await db_client.post(
-        "/api/v1/households", json={"name": "另一个家庭", "base_currency": "CNY"}
-    )
-    assert other.status_code == 201, other.text
-    other_household = other.json()["data"]
-    other_headers = {"X-Household-Id": other_household["id"]}
+    other_household_id = await create_household("另一个家庭")
+    other_headers = await auth_for_household(other_household_id)
     other_account = await _create_account(db_client, other_headers, name="外部账户")
 
     uploaded = await _upload(
@@ -1111,7 +1111,7 @@ async def test_xlsx_upload_preview_confirm(
     assert {item["description"] for item in imported} == {"xlsx-income", "xlsx-expense"}
 
 
-async def test_template_download_csv_and_xlsx(db_client: AsyncClient) -> None:
+async def test_template_download_csv_and_xlsx(db_client: AsyncClient, clean_db: None) -> None:
     csv_response = await db_client.get("/api/v1/imports/template?format=csv")
     assert csv_response.status_code == 200, csv_response.text
     assert "text/csv" in csv_response.headers["content-type"]

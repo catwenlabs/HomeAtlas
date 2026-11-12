@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from httpx import AsyncClient
@@ -514,7 +515,10 @@ async def test_cashflow_series_fills_empty_periods_and_cumulates(
 
 
 async def test_statistics_are_household_scoped(
-    db_client: AsyncClient, household_headers: dict[str, str]
+    db_client: AsyncClient,
+    household_headers: dict[str, str],
+    auth_for_household: Any,
+    create_household: Any,
 ):
     account = await _create_account(db_client, household_headers)
     await _create_transaction(
@@ -527,8 +531,8 @@ async def test_statistics_are_household_scoped(
         status="confirmed",
     )
 
-    second = await db_client.post("/api/v1/households", json={"name": "第二家"})
-    second_headers = {"X-Household-Id": second.json()["data"]["id"]}
+    second_id = await create_household()
+    second_headers = await auth_for_household(second_id)
     other_account = await _create_account(db_client, second_headers, name="别人的账户")
     await _create_transaction(
         db_client,
@@ -603,7 +607,10 @@ async def test_overview_combines_income_expense_and_per_currency_assets(
 
 
 async def test_account_balances_per_account_and_currency_totals(
-    db_client: AsyncClient, household_headers: dict[str, str]
+    db_client: AsyncClient,
+    household_headers: dict[str, str],
+    auth_for_household: Any,
+    create_household: Any,
 ):
     account_a = await _create_account(db_client, household_headers, name="账户A")
     account_b = await _create_account(db_client, household_headers, name="账户B")
@@ -631,8 +638,8 @@ async def test_account_balances_per_account_and_currency_totals(
     )
     assert deactivated.status_code == 200, deactivated.text
 
-    second = await db_client.post("/api/v1/households", json={"name": "第二家"})
-    second_headers = {"X-Household-Id": second.json()["data"]["id"]}
+    second_id = await create_household()
+    second_headers = await auth_for_household(second_id)
     other = await _create_account(db_client, second_headers, name="别人账户")
     await _set_opening(db_client, second_headers, other["id"], "999")
 

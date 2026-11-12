@@ -24,15 +24,6 @@ def _validate_timezone(value: str) -> str:
     return value
 
 
-class HouseholdCreate(BaseModel):
-    name: HouseholdName
-    base_currency: CurrencyCode = "CNY"
-    timezone: Timezone = "Asia/Shanghai"
-
-    _upper_currency = field_validator("base_currency")(_normalize_currency)
-    _timezone = field_validator("timezone")(_validate_timezone)
-
-
 class HouseholdUpdate(BaseModel):
     name: HouseholdName | None = None
     base_currency: CurrencyCode | None = None

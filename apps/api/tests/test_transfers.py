@@ -1,6 +1,7 @@
 """Transfer lifecycle: multi-currency moves, fees, reversal, and statistics (Phase 2E)."""
 
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from httpx import AsyncClient
@@ -575,7 +576,10 @@ async def test_transfer_state_machine_and_draft_updates(
 
 
 async def test_cross_household_transfer_access_is_isolated(
-    db_client: AsyncClient, household_headers: dict[str, str]
+    db_client: AsyncClient,
+    household_headers: dict[str, str],
+    auth_for_household: Any,
+    create_household: Any,
 ):
     source = await _create_account(db_client, household_headers, name="本家账户")
     await _set_opening(db_client, household_headers, source["id"], "1000")
@@ -591,8 +595,8 @@ async def test_cross_household_transfer_access_is_isolated(
         status="draft",
     )
 
-    second = await db_client.post("/api/v1/households", json={"name": "第二家"})
-    second_headers = {"X-Household-Id": second.json()["data"]["id"]}
+    second_id = await create_household()
+    second_headers = await auth_for_household(second_id)
     other = await _create_account(db_client, second_headers, name="别人账户")
 
     mixed = await db_client.post(

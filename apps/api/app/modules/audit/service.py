@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.context import get_actor
 from app.core.serialization import jsonable
 from app.modules.audit.models import AuditLog
 
@@ -18,10 +19,11 @@ def write_audit(
     entity_id: UUID | None,
     before: dict[str, Any] | None = None,
     after: dict[str, Any] | None = None,
+    actor: str | None = None,
 ) -> AuditLog:
     entry = AuditLog(
         household_id=household_id,
-        actor="system",
+        actor=actor or get_actor(),
         action=action,
         entity_type=entity_type,
         entity_id=entity_id,

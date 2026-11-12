@@ -3,14 +3,15 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from app.api.health import router as health_router
-from app.api.v1 import api_router
+from app.api.v1 import api_router, public_router
 from app.core.config import get_settings
 from app.core.db import create_db_engine, create_session_factory
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
+from app.modules.auth.dependencies import get_current_user
 
 
 @asynccontextmanager
@@ -29,7 +30,12 @@ def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
     register_exception_handlers(app)
     app.include_router(health_router)
-    app.include_router(api_router, prefix=settings.api_v1_prefix)
+    app.include_router(public_router, prefix=settings.api_v1_prefix)
+    app.include_router(
+        api_router,
+        prefix=settings.api_v1_prefix,
+        dependencies=[Depends(get_current_user)],
+    )
     return app
 
 

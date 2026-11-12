@@ -9,7 +9,9 @@
 | 1.2 Task 003 | 收支管理 API：状态机、冲正、审计、完整查询筛选 | ✅ 完成 |
 | 1.4 | 统计 API：收支类 + 余额类分币种明细、家庭时区分组 | ✅ 完成（Task 004） |
 | 1.5 | 数据导入预留：接口、模型、去重与异步流程设计评审 | ✅ 设计评审完成（实现移至 2B） |
-| 2A/2B/2C/2D | Web 前端 / 异步导入 / 投资与资产 / Grafana | ⬜ 第一阶段稳定后 |
+| 2A | JWT 认证、首次部署初始化向导、React Web 前端 | ✅ 完成（Task 009） |
+| 2B-2 | 异步导入：NATS JetStream + Outbox + Worker | ⏸ 暂缓 |
+| 2C/2D | 投资与资产 / Grafana | ⬜ 第一阶段稳定后 |
 | 2B-1 | 数据导入同步骨架：CSV 上传、映射、预览/去重、确认生成交易 | ✅ 完成（Task 007） |
 | 2B-3 | 数据导入增强：Excel、模板下载、模糊去重、批量行修正 | ✅ 完成（Task 008） |
 | 2E（原 Phase 1.3） | 转账与多币种：跨币种、手续费衍生支出、余额核对 | ✅ 完成（Task 006） |
@@ -28,7 +30,7 @@
 - Alembic data migration：6 个币种、默认家庭、11 个默认分类（含系统内置「金融手续费」）。
 - 已实现 API（`/api/v1`）：households CRUD、accounts CRUD + 初始余额 + 账面余额 +
   流水/对账历史读取、currencies 查询、categories CRUD（两级分类校验）。
-- `X-Household-Id` 作用域依赖：单家庭兜底、多家庭 400、未知家庭 404。
+- `X-Household-Id` 作用域依赖：单家庭兜底、多家庭 400、未知家庭 404（Phase 2A 已改为 JWT 派生）。
 - 初始余额为 `opening_balance` 确认态单边流水，支持负数、多币种（非本位币需汇率），
   每次设置/修改写入 `system.audit_logs`。
 - 测试：pytest 43 项；覆盖率 98%（CI 门槛 80%）。
@@ -38,15 +40,15 @@
 - 转账 API 已由 Task 006（2E）补齐；`finance.transfers` 表与余额计算在此阶段已就绪。
 - `account_balances` 仅提供读取（账面余额/对账历史），快照写入接口未在 §6 定义，
   留待对账功能设计时补齐。
-- 默认家庭由迁移创建；新建家庭会自动克隆默认分类树。
+- 默认家庭由迁移创建；新建家庭会自动克隆默认分类树（Phase 2A 已移除迁移 seed，基础数据改由首次部署向导确认后写入）。
 
 ## 验收复查（Task 002）
 
-- `alembic upgrade head` 建表 + seed 成功；降级可回滚。
+- `alembic upgrade head` 建表 + seed 成功；降级可回滚（seed 已在 Phase 2A 移除）。
 - 可创建家庭/账户/分类；可设置与修改初始余额并查询审计记录。
 - 多币种开账正确（汇率必填、按币种精度 half-even 取整）。
 - 跨家庭 parent、越级 parent、自引用、系统手续费删除均被拒绝。
-- `X-Household-Id` 兜底/400/404 行为通过测试。
+- `X-Household-Id` 兜底/400/404 行为通过测试（Phase 2A 起由 Bearer 认证替代）。
 
 ## Task 003（Phase 1.2）已完成
 
@@ -77,7 +79,7 @@
   （返回 `TRANSACTION_LINKED_TO_TRANSFER`）。
 - 统计 API（Phase 1.4）需显式排除 `opening_balance`，并按 `household.timezone`
   做月度分组。
-- 无认证，审计 `actor` 固定为 `system`。
+- 无认证，审计 `actor` 固定为 `system`（Phase 2A 已补齐 JWT 认证与用户级 actor）。
 
 ## Task 004（Phase 1.4）已完成
 
@@ -243,6 +245,46 @@
 - XLSX 只读第一个工作表，不支持 `.xls`、宏执行与外部链接。
 - 模糊去重只在映射参数开启时生效，命中仅标记为 `duplicate`，不自动物理删除。
 - 预览仍会重建行数据，批量修正应在预览后、确认前完成。
+
+### Task 009（Phase 2A）已完成（2026-11-12）
+
+- 用户与认证：新增 `core.users`（`household_id`、`username`、`password_hash`、
+  `display_name`、`role=owner|member`、`is_active`），一个家庭可绑定多个成员；
+  `users.household_id` 多对一，业务数据仍以 household 为作用域。迁移
+  `20261112_0004_phase_2a_users` 负责建表，并在无业务数据时清理旧默认家庭。
+- JWT Bearer（HS256）：claims 含 `sub`(user_id)、`household_id`、`role`、`username`、
+  `exp`、`iat`；`POST /auth/login`、`GET /auth/me`、`POST /auth/logout`；
+  密码使用 bcrypt。新配置 `JWT_SECRET_KEY`、`ACCESS_TOKEN_EXPIRE_MINUTES`（默认 7 天）。
+- 首次初始化：`GET /setup/status`、`GET /setup/options`（仅预填）、`POST /setup`
+  （无用户时可调用）。一次写入用户确认的币种、家庭、owner 与分类，重复调用返回
+  409 `SETUP_ALREADY_COMPLETED`；本位币不在所选币种中返回 400
+  `BASE_CURRENCY_NOT_SELECTED`。`currency_codes` / `categories` 为 `null` 用全部
+  内置项；`categories: []` 表示不写入分类，`currency_codes` 必须包含本位币。
+- 原则：**迁移不再写入任何用户基础数据**。`0002` 的币种/家庭/分类 seed 已移除；
+  币种与分类目录改为代码内置（`currencies/defaults.py`、`categories/defaults.py`），
+  仅作为向导预填项。家庭只由初始化向导创建，不再提供 `POST /households`。
+- 作用域：移除 `X-Household-Id`，household 一律由 JWT 派生；`/api/v1` 业务路由
+  统一要求 Bearer，`/health`、`/ready`、`/setup/*`、`/auth/login` 保持公开。
+- 成员管理：owner 可列出/新增/修改成员（显示名、角色、密码、停用），
+  保护最后一个 active owner 不被降级或停用。
+- 审计：新增请求级 actor 上下文（`app/core/context.py`），`write_audit` 写入
+  当前用户名；系统动作仍为 `system`。
+- Web：Vite + React 19 + TypeScript + Tailwind；TanStack Query/Router、Zustand、
+  Axios、Lucide。页面：初始化向导、登录、总览、账户、收支、分类、转账、统计、
+  导入、设置；向导预填币种/分类复选，确认后才提交。
+- 部署：`apps/web` 多阶段构建（Node 构建 + nginx 托管），nginx 反代 `/api`
+  到 `api:8000`；compose 增加 `web` 服务与 `WEB_BIND`（默认 `127.0.0.1:8080`）；
+  `.env.example` 增加 `JWT_SECRET_KEY` 与 `WEB_BIND`。
+- 测试：新增 `tests/test_auth.py` 并改造 `conftest.py`（每测 truncate + setup +
+  默认 Bearer）；全量 **108 项通过，覆盖率 96.85%**；ruff / mypy strict 通过；
+  前端 `npm run build`（tsc + vite）通过。
+
+### Phase 2A 已知边界
+
+- JWT 无刷新令牌与登出黑名单；`POST /auth/logout` 仅作语义占位，客户端丢弃 token。
+- 初始化只能执行一次；忘记管理员密码需要直接改库或重建环境。
+- 前端暂无离线缓存与移动端原生壳；导入行编辑仅支持“跳过”，完整字段修正走 API。
+- 家庭切换未开放（符合“一用户一家庭”的产品约束）。
 
 ### 决策：2B-2 异步化暂缓（2026-11-11）
 

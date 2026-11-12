@@ -1,51 +1,38 @@
-"""Household CRUD, default categories, base-currency lock, and scoping rules."""
+"""Household scoping, base-currency lock, and token-derived tenancy."""
+
+from typing import Any
 
 from httpx import AsyncClient
 
 
-async def test_create_household_seeds_default_categories(db_client: AsyncClient, clean_db: None):
-    response = await db_client.post(
-        "/api/v1/households",
-        json={"name": "我的家", "base_currency": "usd", "timezone": "America/New_York"},
-    )
-    assert response.status_code == 201, response.text
-    data = response.json()["data"]
-    assert data["base_currency"] == "USD"
-    assert data["timezone"] == "America/New_York"
-
-    headers = {"X-Household-Id": data["id"]}
-    categories = await db_client.get("/api/v1/categories?page_size=100", headers=headers)
-    assert categories.status_code == 200
-    items = categories.json()["data"]["items"]
-    assert len(items) == 11
-    assert {item["name"] for item in items} >= {"工资", "餐饮", "金融手续费"}
-
-
-async def test_list_and_get_households(db_client: AsyncClient, clean_db: None):
-    created = await db_client.post("/api/v1/households", json={"name": "甲"})
-    household_id = created.json()["data"]["id"]
-
+async def test_current_household_is_the_only_visible_one(
+    db_client: AsyncClient, household: dict
+) -> None:
     listing = await db_client.get("/api/v1/households")
     assert listing.status_code == 200
-    assert listing.json()["data"]["total"] == 1
+    data = listing.json()["data"]
+    assert data["total"] == 1
+    assert data["items"][0]["id"] == household["id"]
 
-    fetched = await db_client.get(f"/api/v1/households/{household_id}")
+    fetched = await db_client.get(f"/api/v1/households/{household['id']}")
     assert fetched.status_code == 200
-    assert fetched.json()["data"]["name"] == "甲"
+    assert fetched.json()["data"]["name"] == household["name"]
 
     missing = await db_client.get("/api/v1/households/00000000-0000-0000-0000-000000000099")
     assert missing.status_code == 404
     assert missing.json()["error_code"] == "HOUSEHOLD_NOT_FOUND"
 
 
-async def test_invalid_timezone_and_currency_are_rejected(db_client: AsyncClient, clean_db: None):
-    bad_timezone = await db_client.post(
-        "/api/v1/households", json={"name": "甲", "timezone": "Mars/Base"}
+async def test_invalid_timezone_and_currency_are_rejected(
+    db_client: AsyncClient, household: dict
+) -> None:
+    bad_timezone = await db_client.put(
+        f"/api/v1/households/{household['id']}", json={"timezone": "Mars/Base"}
     )
     assert bad_timezone.status_code == 422
 
-    bad_currency = await db_client.post(
-        "/api/v1/households", json={"name": "甲", "base_currency": "XXX"}
+    bad_currency = await db_client.put(
+        f"/api/v1/households/{household['id']}", json={"base_currency": "XXX"}
     )
     assert bad_currency.status_code == 404
     assert bad_currency.json()["error_code"] == "CURRENCY_NOT_FOUND"
@@ -92,54 +79,53 @@ async def test_update_household_and_base_currency_lock(
     assert missing_currency.status_code == 404
 
 
-async def test_household_scope_falls_back_to_single_household(
-    db_client: AsyncClient, household: dict
+async def test_household_scope_comes_from_token(
+    db_client: AsyncClient,
+    household: dict,
+    household_headers: dict[str, str],
+    auth_for_household: Any,
+    create_household: Any,
 ):
-    response = await db_client.get("/api/v1/accounts")
-    assert response.status_code == 200
-    assert response.json()["data"]["total"] == 0
+    own = await db_client.get("/api/v1/accounts")
+    assert own.status_code == 200
+    assert own.json()["data"]["total"] == 0
 
+    second_id = await create_household()
+    second_headers = await auth_for_household(second_id)
 
-async def test_household_scope_requires_header_when_multiple(
-    db_client: AsyncClient, household: dict, household_headers: dict[str, str]
-):
-    second = await db_client.post("/api/v1/households", json={"name": "第二家"})
-    second_id = second.json()["data"]["id"]
+    await db_client.post("/api/v1/accounts", headers=second_headers, json={"name": "第二家账户"})
+    await db_client.post("/api/v1/accounts", headers=household_headers, json={"name": "自家账户"})
 
-    ambiguous = await db_client.get("/api/v1/accounts")
-    assert ambiguous.status_code == 400
-    assert ambiguous.json()["error_code"] == "HOUSEHOLD_REQUIRED"
+    first_scope = await db_client.get("/api/v1/accounts", headers=household_headers)
+    second_scope = await db_client.get("/api/v1/accounts", headers=second_headers)
+    assert first_scope.json()["data"]["total"] == 1
+    assert first_scope.json()["data"]["items"][0]["name"] == "自家账户"
+    assert second_scope.json()["data"]["total"] == 1
+    assert second_scope.json()["data"]["items"][0]["name"] == "第二家账户"
 
-    scoped = await db_client.get("/api/v1/accounts", headers=household_headers)
-    assert scoped.status_code == 200
-
-    missing = await db_client.get(
-        "/api/v1/accounts",
-        headers={"X-Household-Id": "00000000-0000-0000-0000-000000000099"},
+    # Another household's id is indistinguishable from a missing one.
+    cross_read = await db_client.get(f"/api/v1/households/{second_id}", headers=household_headers)
+    assert cross_read.status_code == 404
+    assert cross_read.json()["error_code"] == "HOUSEHOLD_NOT_FOUND"
+    cross_update = await db_client.put(
+        f"/api/v1/households/{second_id}",
+        headers=household_headers,
+        json={"name": "越权改名"},
     )
-    assert missing.status_code == 404
-    assert missing.json()["error_code"] == "HOUSEHOLD_NOT_FOUND"
-
-    second_scoped = await db_client.get("/api/v1/accounts", headers={"X-Household-Id": second_id})
-    assert second_scoped.status_code == 200
+    assert cross_update.status_code == 404
 
 
-async def test_household_scope_without_any_household(db_client: AsyncClient, clean_db: None):
-    response = await db_client.get("/api/v1/accounts")
-    assert response.status_code == 400
-    assert response.json()["error_code"] == "HOUSEHOLD_REQUIRED"
+async def test_business_endpoints_require_valid_token(db_client: AsyncClient, household: dict):
+    saved = db_client.headers.pop("Authorization")
+    try:
+        missing = await db_client.get("/api/v1/accounts")
+    finally:
+        db_client.headers["Authorization"] = saved
+    assert missing.status_code == 401
+    assert missing.json()["error_code"] == "AUTH_REQUIRED"
 
-
-async def test_invalid_household_header_is_validation_error(
-    db_client: AsyncClient, household: dict
-):
-    response = await db_client.get("/api/v1/accounts", headers={"X-Household-Id": "nope"})
-    assert response.status_code == 422
-    assert response.json()["error_code"] == "VALIDATION_ERROR"
-
-
-async def test_household_list_sort_validation(db_client: AsyncClient, household: dict):
-    response = await db_client.get("/api/v1/households?sort_by=name&sort_order=desc")
-    assert response.status_code == 200
-    bad = await db_client.get("/api/v1/households?sort_by=evil")
-    assert bad.status_code == 400
+    invalid = await db_client.get(
+        "/api/v1/accounts", headers={"Authorization": "Bearer not-a-token"}
+    )
+    assert invalid.status_code == 401
+    assert invalid.json()["error_code"] == "AUTH_INVALID_TOKEN"

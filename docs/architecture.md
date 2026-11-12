@@ -7,22 +7,33 @@
 模块化单体（Modular Monolith）：单进程 FastAPI 应用 + 单 PostgreSQL 实例。不拆微服务；NATS / Worker / Grafana 属于第二阶段。
 
 ```
+Browser (apps/web, React SPA)
+   │  same-origin /api  (nginx reverse proxy in deployment)
+   ▼
 Client ──> uvicorn (FastAPI app)
              ├── app/api/health.py      横切路由（/health /ready，envelope 之外）
-             ├── app/api/v1.py          /api/v1 路由聚合
+             ├── app/api/v1.py          /api/v1 路由聚合（public_router + api_router）
              ├── app/modules/<domain>/  业务路由 / schemas / service / models
-             ├── app/core/              配置 / 日志 / DB 会话 / 异常 / 统一响应
+             ├── app/core/              配置 / 日志 / DB 会话 / 异常 / 统一响应 / 审计上下文
              └── SQLAlchemy async engine (asyncpg) ──> PostgreSQL
 ```
+
+认证：`auth` 模块签发/校验 JWT（HS256），业务路由通过依赖取得 `CurrentUser`
+与 `CurrentHousehold`；家庭作用域完全由 token 的 `household_id` 派生，客户端不能切换。
+
+前端：Vite + React 19 + TypeScript + Tailwind；TanStack Router 负责路由与初始化/登录守卫，
+TanStack Query 管理服务端状态，Zustand 持久化 token 与用户信息，Axios 统一注入 Bearer
+并解包 envelope。生产镜像为多阶段构建，nginx 托管静态资源并把 `/api` 反代到 `api:8000`。
 
 ## 模块与 schema 映射（当前）
 
 | app/modules/ | PostgreSQL schema | 状态 |
 | -- | -- | -- |
 | households | core | ✅ Phase 1.1 |
+| users / auth / setup | core | ✅ Phase 2A（JWT、成员管理、首次初始化） |
 | accounts（含 account_balances） | core | ✅ Phase 1.1 |
-| currencies | core | ✅ Phase 1.1（只读） |
-| categories | finance | ✅ Phase 1.1 |
+| currencies | core | ✅ Phase 1.1（目录由向导确认后写入，只读 API） |
+| categories | finance | ✅ Phase 1.1（向导确认后写入） |
 | transactions | finance | ✅ Phase 1.2（opening_balance + 收支生命周期） |
 | transfers | finance | ✅ Phase 2E（同币种/跨币种/同账户换汇、手续费、冲正） |
 | imports | system | ✅ Phase 2B-3（CSV/XLSX、模板、精确/模糊去重、批量行修正、确认生成交易） |
@@ -35,7 +46,10 @@ Client ──> uvicorn (FastAPI app)
 
 | 模块 | 端点 |
 | -- | -- |
-| Households | `GET/POST /households`、`GET/PUT /households/{id}` |
+| Setup（公开） | `GET /setup/status`、`GET /setup/options`、`POST /setup` |
+| Auth | `POST /auth/login`（公开）、`GET /auth/me`、`POST /auth/logout` |
+| Users | `GET /users`、`POST /users`、`PUT /users/{id}`（owner） |
+| Households | `GET /households`、`GET/PUT /households/{id}`（PUT 仅 owner） |
 | Accounts | `GET/POST /accounts`、`GET/PUT/DELETE /accounts/{id}`、`PUT /accounts/{id}/opening-balance`、`GET /accounts/{id}/balances`、`GET /accounts/{id}/transactions`、`GET /accounts/{id}/balance-history` |
 | Currencies | `GET /currencies`、`GET /currencies/{code}` |
 | Categories | `GET/POST /categories`、`GET/PUT/DELETE /categories/{id}` |
@@ -44,14 +58,34 @@ Client ──> uvicorn (FastAPI app)
 | Imports | `POST/GET /imports`、`GET/DELETE /imports/{id}`、`PUT /imports/{id}/mapping`、`POST /imports/{id}/preview`、`GET /imports/{id}/rows`、`PUT /imports/{id}/rows/{row_id}`、`POST /imports/{id}/confirm`、`POST /imports/{id}/cancel` |
 | Statistics | `GET /statistics/income-expense`、`GET /statistics/category`、`GET /statistics/monthly`、`GET /statistics/cashflow`、`GET /statistics/overview`、`GET /statistics/account-balances` |
 
-### Household 作用域
+### 认证与家庭作用域（Phase 2A）
 
-所有带家庭语义的端点接受可选 Header `X-Household-Id`：
+- `public_router`：`/setup/status`、`/setup/options`、`/setup`、`/auth/login`；
+  其余 `/api/v1` 路由统一挂在 `api_router`，由 `CurrentUser` 依赖强制 Bearer。
+- JWT 使用 HS256，claims：`sub`（user_id）、`household_id`、`role`、`username`、
+  `exp`、`iat`；密钥来自 `JWT_SECRET_KEY`，有效期由 `ACCESS_TOKEN_EXPIRE_MINUTES`
+  （默认 7 天）控制。
+- 一次家庭绑定多个成员：`core.users.household_id` 多对一；业务数据始终以
+  household 为作用域，前端没有家庭切换。
+- `CurrentHousehold` 直接由 token 的 `household_id` 加载家庭；不再接受
+  `X-Household-Id`，跨家庭访问一律视为不存在。
+- owner 才能新增/修改成员；系统保护最后一个 active owner 不被降级或停用。
+- 审计 actor 取自当前用户：`app/core/context.py` 保存请求级 actor，
+  `write_audit` 写入 `actor` 字段（系统任务仍可用 `system`）。
 
-- 提供且存在 → 使用该家庭；不存在 → 404 `HOUSEHOLD_NOT_FOUND`。
-- 未提供且仅一个家庭 → 自动兜底。
-- 未提供且多个家庭 → 400 `HOUSEHOLD_REQUIRED`。
-- 未提供且无家庭 → 400 `HOUSEHOLD_REQUIRED`。
+### 首次部署初始化（Phase 2A）
+
+- 数据库迁移**不写入**币种、分类或默认家庭等用户基础数据。
+- `GET /setup/options` 返回代码内置的币种、分类与时区选项（纯预填，不写库）。
+- `POST /setup` 仅在 `core.users` 为空时可调用；一次写入用户确认的币种、
+  家庭、owner 与分类，并直接返回 token。重复调用返回 409
+  `SETUP_ALREADY_COMPLETED`。
+- `currency_codes` / `categories` 为 `null` 时使用全部内置项；`categories: []`
+  表示不写入分类。`currency_codes` 必须包含本位币，否则返回 400
+  `BASE_CURRENCY_NOT_SELECTED`（因此至少选择一个币种）。
+- 家庭只通过首次部署向导创建；不再提供公开的 `POST /households`，避免绕过
+  初始化流程或越权创建家庭。`GET /households` 只返回当前 token 所属家庭，
+  `GET/PUT /households/{id}` 对其他家庭一律返回 404；PUT 仅 owner 可调用。
 
 ### 初始余额（opening_balance）
 
@@ -173,13 +207,36 @@ Client ──> uvicorn (FastAPI app)
   - 未捕获异常 → `INTERNAL_ERROR`（500，细节不外泄）
 - `/health`（进程存活）与 `/ready`（`SELECT 1` 数据库探活）是基础设施探针，不走 envelope；compose healthcheck 用 `/ready`。
 
+## 前端结构
+
+```
+apps/web/src/
+├── api/          # Axios client（Bearer + envelope）与类型化端点
+├── components/   # AppShell + 通用 UI（Button/Card/Modal/Field…）
+├── hooks/        # 账户/分类/币种等引用数据查询
+├── lib/          # 金额、日期、错误信息格式化
+├── pages/        # Setup / Login / Dashboard / Transactions / Accounts /
+│                 # Categories / Transfers / Statistics / Imports / Settings
+├── store/        # Zustand：会话持久化、初始化状态
+├── router.tsx    # TanStack Router 路由树与 setup/login 守卫
+└── main.tsx      # QueryClient + RouterProvider
+```
+
+- 路由守卫：应用启动先请求 `/setup/status`；未初始化强制进入向导，已初始化但未登录
+  则跳转登录页。401 会清空本地会话并回到登录页。
+- 初始化向导：三步（管理员账户 → 家庭与币种 → 分类确认），全部选择项来自
+  `/setup/options`，提交后才写入数据库。
+- 所有金额展示为“数值 + 币种”；统计接口返回的 decimal 字符串直接展示，不在前端
+  做浮点换算。
+- 生产部署由 nginx 提供 SPA fallback 与 `/api` 反向代理，浏览器只访问同源。
+
 ## 日志
 
 structlog：开发环境 Console 渲染，生产（`APP_ENV=production`）JSON。经 `ProcessorFormatter` 桥接 uvicorn/sqlalchemy 的标准库日志。
 
 ## 已知范围
 
-- 无认证；`audit_logs.actor` 固定为 `system`。
+- 认证为 JWT Bearer + bcrypt；无刷新令牌与登出黑名单（登出仅客户端丢弃 token）。
 - 转账 API（Phase 2E）与统计 API（收支类 + 余额类分币种明细）已完成。
 - 数据导入 2B-1 同步骨架与 2B-3 增强已完成（CSV/XLSX、模板下载、精确/模糊去重、
   批量行修正）；NATS/Worker 异步化（2B-2）已决定暂缓。

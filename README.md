@@ -4,28 +4,36 @@
 
 > 规格说明书：[Specification v1.3（issue #1 评论）](https://github.com/catwenlabs/HomeAtlas/issues/1#issuecomment-6788969821)，本地镜像 `docs/specification.md`。
 
-当前进度：**Phase 1.0–1.4、Phase 2E（转账与多币种）、Phase 2B-1 与 2B-3（数据导入）完成；Phase 1.5 数据导入设计评审完成**。已实现家庭、账户、币种、分类、初始余额、账户余额查询，收入/支出的创建、确认、修改、删除、冲正、筛选与审计，同币种/跨币种/同账户换汇转账、手续费衍生支出与冲正，收入/支出、分类、月度/年度、资金流向、总览与账户余额统计，以及 CSV/XLSX 上传 → 字段映射 → 同步预览/去重（精确 + 可选模糊）→ 人工确认 → 生成 `income`/`expense` 流水的导入闭环，支持模板下载与批量行修正。NATS/Worker 异步化（2B-2）已决定暂缓。
+当前进度：**Phase 1.0–1.4、Phase 2E（转账与多币种）、Phase 2B-1 与 2B-3（数据导入）、Phase 2A（认证与 Web 前端）完成；Phase 1.5 数据导入设计评审完成**。已实现家庭、账户、币种、分类、初始余额、账户余额查询，收入/支出的创建、确认、修改、删除、冲正、筛选与审计，同币种/跨币种/同账户换汇转账、手续费衍生支出与冲正，收入/支出、分类、月度/年度、资金流向、总览与账户余额统计，以及 CSV/XLSX 上传 → 字段映射 → 同步预览/去重（精确 + 可选模糊）→ 人工确认 → 生成 `income`/`expense` 流水的导入闭环，支持模板下载与批量行修正。Phase 2A 增加 JWT 认证、首次部署初始化向导与 React Web 前端。NATS/Worker 异步化（2B-2）已决定暂缓。
 
 ## 快速开始
 
 ```bash
 cd deploy
-cp .env.example .env          # 编辑 POSTGRES_PASSWORD
-docker compose up -d          # 启动 postgres + api
+cp .env.example .env          # 编辑 POSTGRES_PASSWORD 与 JWT_SECRET_KEY
+docker compose up -d          # 启动 postgres + api + web
 docker compose run --rm api alembic upgrade head   # 执行迁移（独立命令，不在启动时自动跑）
 curl http://127.0.0.1:8000/health   # {"status":"ok"}
 curl http://127.0.0.1:8000/ready    # {"status":"ok","database":"ok"}
 ```
 
-Swagger UI：<http://127.0.0.1:8000/docs>
+打开 <http://127.0.0.1:8080> 进入首次部署向导：创建管理员账户、确认家庭信息、
+勾选需要写入的币种与分类。**迁移不会写入任何用户基础数据**；内置币种与分类只作为
+向导预填项，只有用户确认后才会落库。
+
+Swagger UI：<http://127.0.0.1:8000/docs>（业务接口需要 Bearer token）。
 
 ## 已实现 API
 
-统一前缀 `/api/v1`，成功/失败均使用统一 envelope（§6.8）。
+统一前缀 `/api/v1`，成功/失败均使用统一 envelope（§6.8）。除 `setup/*` 与 `auth/login` 外，
+所有业务接口都要求 `Authorization: Bearer <token>`；家庭作用域由 JWT 中的 `household_id` 派生。
 
 | 模块 | 端点 |
 | -- | -- |
-| Households | `GET/POST /api/v1/households`、`GET/PUT /api/v1/households/{id}` |
+| Setup（公开） | `GET /api/v1/setup/status`、`GET /api/v1/setup/options`、`POST /api/v1/setup` |
+| Auth | `POST /api/v1/auth/login`（公开）、`GET /api/v1/auth/me`、`POST /api/v1/auth/logout` |
+| Users | `GET /api/v1/users`、`POST /api/v1/users`、`PUT /api/v1/users/{id}`（owner） |
+| Households | `GET /api/v1/households`、`GET/PUT /api/v1/households/{id}`（PUT 仅 owner） |
 | Accounts | `GET/POST /api/v1/accounts`、`GET/PUT/DELETE /api/v1/accounts/{id}` |
 | 初始余额 | `PUT /api/v1/accounts/{id}/opening-balance` |
 | 余额/流水 | `GET /api/v1/accounts/{id}/balances`、`/transactions`、`/balance-history` |
@@ -37,68 +45,87 @@ Swagger UI：<http://127.0.0.1:8000/docs>
 | Statistics | `GET /api/v1/statistics/income-expense`、`/category`、`/monthly`、`/cashflow`、`/overview`、`/account-balances` |
 | 探针 | `GET /health`、`GET /ready`（不走 envelope） |
 
-业务端点支持可选 Header `X-Household-Id`：只有一个家庭时自动兜底，多个家庭时必须显式指定（否则 400 `HOUSEHOLD_REQUIRED`）。
+### 首次初始化与登录
+
+```bash
+# 是否已初始化；options 只返回预填项，不写库
+curl -s http://127.0.0.1:8000/api/v1/setup/status
+curl -s http://127.0.0.1:8000/api/v1/setup/options
+
+# 首次初始化：创建家庭 + owner + 用户确认的币种/分类，并直接返回 token
+curl -s -X POST http://127.0.0.1:8000/api/v1/setup \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"owner","password":"password123","household_name":"我的家",
+       "base_currency":"CNY","currency_codes":["CNY","USD"],
+       "categories":[{"name":"工资","category_type":"income"},
+                     {"name":"餐饮","category_type":"expense"}]}'
+
+# 后续登录
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"owner","password":"password123"}' | jq -r '.data.access_token')
+```
+
+`currency_codes` / `categories` 省略（`null`）表示使用全部内置项；`categories: []` 表示不
+写入任何分类。`currency_codes` 必须至少包含本位币，否则返回 400
+`BASE_CURRENCY_NOT_SELECTED`；因此币种至少要选择一个。
+初始化只能执行一次，重复调用返回 409 `SETUP_ALREADY_COMPLETED`。
 
 ### 示例
 
 ```bash
-# 创建家庭（会自动生成默认分类树）
-curl -s -X POST http://127.0.0.1:8000/api/v1/households \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"我的家","base_currency":"CNY"}'
-
-# 创建账户
+# 创建账户（使用登录返回的 $TOKEN）
 curl -s -X POST http://127.0.0.1:8000/api/v1/accounts \
   -H 'Content-Type: application/json' \
-  -H "X-Household-Id: <household-id>" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"name":"中国银行","account_type":"bank","currency":"CNY"}'
 
 # 设置初始余额（同一账户+币种重复 PUT 即修改，并留审计）
 curl -s -X PUT http://127.0.0.1:8000/api/v1/accounts/<account-id>/opening-balance \
   -H 'Content-Type: application/json' \
-  -H "X-Household-Id: <household-id>" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"amount":"1000.00","description":"开账"}'
 
 # 多币种开账：非本位币必须提供汇率
 curl -s -X PUT http://127.0.0.1:8000/api/v1/accounts/<account-id>/opening-balance \
   -H 'Content-Type: application/json' \
-  -H "X-Household-Id: <household-id>" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"amount":"100.00","currency":"USD","exchange_rate":"7.10"}'
 
 # 记一笔支出（默认 draft；传 "status":"confirmed" 可直接确认）
 curl -s -X POST http://127.0.0.1:8000/api/v1/transactions \
   -H 'Content-Type: application/json' \
-  -H "X-Household-Id: <household-id>" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"account_id":"<account-id>","category_id":"<expense-category-id>","transaction_type":"expense","amount":"35.50","description":"午餐"}'
 
 # 确认 draft
 curl -s -X PUT http://127.0.0.1:8000/api/v1/transactions/<transaction-id> \
   -H 'Content-Type: application/json' \
-  -H "X-Household-Id: <household-id>" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"status":"confirmed"}'
 
 # 冲正已确认流水（原记录置 reversed，并生成关联反向流水）
 curl -s -X POST http://127.0.0.1:8000/api/v1/transactions/<transaction-id>/reverse \
-  -H 'X-Household-Id: <household-id>'
+  -H "Authorization: Bearer $TOKEN"
 
 # CSV 导入：上传 → 映射 → 预览 → 确认（2B-1 同步执行）
 curl -s -X POST http://127.0.0.1:8000/api/v1/imports \
-  -H "X-Household-Id: <household-id>" \
+  -H "Authorization: Bearer $TOKEN" \
   -F 'file=@alipay-2026-06.csv' \
   -F 'source_format=csv' \
   -F 'account_id=<account-id>'
 
 curl -s -X PUT http://127.0.0.1:8000/api/v1/imports/<batch-id>/mapping \
   -H 'Content-Type: application/json' \
-  -H "X-Household-Id: <household-id>" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"columns":{"transaction_date":"交易日期","amount":"金额","description":"备注"},"amount_mode":"signed_positive_income"}'
 
 curl -s -X POST http://127.0.0.1:8000/api/v1/imports/<batch-id>/preview \
-  -H "X-Household-Id: <household-id>"
+  -H "Authorization: Bearer $TOKEN"
 
 curl -s -X POST http://127.0.0.1:8000/api/v1/imports/<batch-id>/confirm \
   -H 'Content-Type: application/json' \
-  -H "X-Household-Id: <household-id>" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"on_duplicate":"skip","create_status":"confirmed"}'
 ```
 
@@ -111,26 +138,53 @@ CSV 导入默认限制单文件 10 MB、单批次 20,000 行（`IMPORT_MAX_FILE_
 
 ## 开发
 
-```bash
-# 测试（需要 deploy/docker-compose.yml 的 postgres 在运行）
-cd apps/api && pytest
-# 或在容器内：
-cd deploy && docker compose run --rm api pytest
+本地开发通过根目录 Makefile 驱动（参考 pulse 项目的模式）。`deploy/compose.dev.yaml`
+为 postgres 叠加发布开发端口 `127.0.0.1:54321`（生产 compose 的 `backend` 网络是
+internal-only，主机不可直达），API 与前端跑在本机：
 
-# Lint / 格式 / 类型检查
-cd apps/api
-ruff check . && ruff format --check .
-mypy app
+```bash
+make dev          # 一键本地环境：dev postgres + uvicorn --reload + Vite dev server
+make test         # API 测试套件（自动起 dev postgres、建 venv、跑 pytest + 覆盖率）
+make lint         # ruff check + format --check
+make typecheck    # mypy strict
+make web-build    # tsc --noEmit + vite build
+
+make dev-db-up    # 单独启动带开发端口 overlay 的 postgres
+make dev-db-down  # 停掉并移除 dev postgres 容器（数据卷保留）
+make dev-migrate  # 对开发库执行 alembic upgrade head
 ```
 
-CI（GitHub Actions）：push / PR 触发 ruff + mypy + pytest（覆盖率 ≥ 80% 强制）。
+首次 `make dev` 会自动创建 `apps/api/.venv`（优先 uv，回退 python3 -m venv）、
+安装依赖、跑迁移，并按需安装 `apps/web/node_modules`。API 在
+`http://127.0.0.1:8000`（文档 `/docs`），前端在 `http://localhost:5173`（`/api`
+代理到本机 API）。
+
+等价的单步命令（不依赖 Makefile）：
+
+```bash
+cd apps/api && pytest          # 需 postgres 可达（POSTGRES_HOST/PORT/Password 环境变量）
+ruff check . && ruff format --check . && mypy app
+
+cd apps/web
+npm install
+npm run dev      # Vite dev server，/api 代理到 127.0.0.1:8000
+npm run build    # tsc --noEmit + vite build
+```
+
+CI（GitHub Actions）：push / PR 触发四个 job —— **Backend**（ruff + mypy strict + pytest，
+覆盖率 ≥ 80% 强制，起 Postgres service）、**Frontend**（`npm ci && npm run build`）、
+**Container**（compose 配置校验 + api/web 镜像构建，GHA 层缓存）、**Publish images**（仅
+push 到 main 或 `v*` tag 时，把 `ghcr.io/<owner>/<repo>/api|web` 推到 GHCR，tag 含
+`sha-<短哈希>`、`main`、语义化版本）。同一分支的新推送会自动取消旧跑。
 
 ## 目录结构
 
 ```
 home-atlas/
 ├── apps/api/          # FastAPI 应用（app/core 基础设施、app/modules 业务模块）
-├── deploy/            # docker-compose.yml + .env.example
+├── apps/web/          # React + TypeScript + Tailwind 前端（Vite 构建，nginx 托管）
+├── deploy/            # docker-compose.yml + compose.dev.yaml（本地开发 overlay）+ .env.example
+├── scripts/           # dev.sh（make dev 的编排脚本）
 ├── docs/              # architecture / database / development-roadmap / import-design / specification
 └── .github/workflows/ # CI
 ```

@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from httpx import AsyncClient
@@ -450,7 +451,12 @@ async def test_list_filters_pagination_and_sorting(
     assert {income["id"], lunch["id"], taxi["id"]} <= ids
 
 
-async def test_get_is_household_scoped(db_client: AsyncClient, household_headers: dict[str, str]):
+async def test_get_is_household_scoped(
+    db_client: AsyncClient,
+    household_headers: dict[str, str],
+    auth_for_household: Any,
+    create_household: Any,
+):
     account = await _create_account(db_client, household_headers)
     transaction = await _create_transaction(
         db_client,
@@ -472,8 +478,8 @@ async def test_get_is_household_scoped(db_client: AsyncClient, household_headers
     assert missing.status_code == 404
     assert missing.json()["error_code"] == "TRANSACTION_NOT_FOUND"
 
-    second = await db_client.post("/api/v1/households", json={"name": "第二家"})
-    second_headers = {"X-Household-Id": second.json()["data"]["id"]}
+    second_id = await create_household()
+    second_headers = await auth_for_household(second_id)
     other_account = await _create_account(db_client, second_headers, name="别人的账户")
     other_transaction = await _create_transaction(
         db_client,

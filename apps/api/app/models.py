@@ -2,6 +2,7 @@
 
 from app.modules.accounts.models import Account, AccountBalance
 from app.modules.audit.models import AuditLog
+from app.modules.auth.models import User
 from app.modules.categories.models import Category
 from app.modules.currencies.models import Currency
 from app.modules.households.models import Household
@@ -20,4 +21,5 @@ __all__ = [
     "ImportRow",
     "Transaction",
     "Transfer",
+    "User",
 ]

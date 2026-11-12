@@ -44,6 +44,23 @@ services:
       timeout: 5s
       retries: 3
 
+  web:
+    build:
+      context: ../apps/web
+    container_name: homeatlas-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${WEB_BIND:-127.0.0.1:8080}:80"
+    networks:
+      - frontend
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
 volumes:
   postgres_data:
 

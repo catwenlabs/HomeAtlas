@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from httpx import AsyncClient
@@ -91,7 +92,11 @@ async def test_create_child_and_list_by_parent(
 
 
 async def test_category_hierarchy_rules(
-    db_client: AsyncClient, household: dict, household_headers: dict[str, str]
+    db_client: AsyncClient,
+    household: dict,
+    household_headers: dict[str, str],
+    auth_for_household: Any,
+    create_household: Any,
 ):
     dining = await _find_category(db_client, household_headers, "餐饮")
     salary = await _find_category(db_client, household_headers, "工资")
@@ -144,9 +149,15 @@ async def test_category_hierarchy_rules(
     assert type_change_with_children.status_code == 400
     assert type_change_with_children.json()["error_code"] == "CATEGORY_HAS_CHILDREN"
 
-    second = await db_client.post("/api/v1/households", json={"name": "第二家"})
-    second_headers = {"X-Household-Id": second.json()["data"]["id"]}
-    other_parent = await _find_category(db_client, second_headers, "餐饮")
+    second_id = await create_household()
+    second_headers = await auth_for_household(second_id)
+    other_parent_response = await db_client.post(
+        "/api/v1/categories",
+        headers=second_headers,
+        json={"name": "餐饮", "category_type": "expense"},
+    )
+    assert other_parent_response.status_code == 201, other_parent_response.text
+    other_parent = other_parent_response.json()["data"]
     cross_household = await db_client.post(
         "/api/v1/categories",
         headers=second_headers,

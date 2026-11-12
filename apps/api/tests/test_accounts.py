@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from httpx import AsyncClient
@@ -77,11 +78,14 @@ async def test_create_account_rejects_unknown_currency(
 
 
 async def test_account_is_scoped_to_household(
-    db_client: AsyncClient, household: dict, household_headers: dict[str, str]
+    db_client: AsyncClient,
+    household: dict,
+    household_headers: dict[str, str],
+    auth_for_household: Any,
+    create_household: Any,
 ):
-    second = await db_client.post("/api/v1/households", json={"name": "第二家"})
-    second_id = second.json()["data"]["id"]
-    second_headers = {"X-Household-Id": second_id}
+    second_id = await create_household()
+    second_headers = await auth_for_household(second_id)
     second_account = await _create_account(db_client, second_headers, name="第二账户")
 
     response = await db_client.get(

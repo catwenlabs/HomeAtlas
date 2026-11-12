@@ -14,21 +14,19 @@ from app.modules.transfers.models import Transfer
 
 
 async def _household_and_account(
-    client: AsyncClient, clean_db: None
+    client: AsyncClient, household: dict
 ) -> tuple[dict, dict, dict[str, str]]:
-    household = await client.post("/api/v1/households", json={"name": "约束测试"})
-    household_data = household.json()["data"]
-    headers = {"X-Household-Id": household_data["id"]}
     account = await client.post(
-        "/api/v1/accounts", headers=headers, json={"name": "现金", "currency": "CNY"}
+        "/api/v1/accounts",
+        json={"name": "现金", "currency": "CNY"},
     )
-    return household_data, account.json()["data"], headers
+    return household, account.json()["data"], {}
 
 
 async def test_non_opening_transaction_must_be_positive(
-    db_client: AsyncClient, db_app, clean_db: None
+    db_client: AsyncClient, db_app, household: dict
 ):
-    household, account, _ = await _household_and_account(db_client, clean_db)
+    household, account, _ = await _household_and_account(db_client, household)
     async with db_app.state.db_session_factory() as session:
         session.add(
             Transaction(
@@ -50,8 +48,8 @@ async def test_non_opening_transaction_must_be_positive(
             await session.commit()
 
 
-async def test_category_type_check(db_client: AsyncClient, db_app, clean_db: None):
-    household, _, _ = await _household_and_account(db_client, clean_db)
+async def test_category_type_check(db_client: AsyncClient, db_app, household: dict):
+    household, _, _ = await _household_and_account(db_client, household)
     async with db_app.state.db_session_factory() as session:
         session.add(
             Category(
@@ -65,9 +63,9 @@ async def test_category_type_check(db_client: AsyncClient, db_app, clean_db: Non
 
 
 async def test_transfer_cannot_move_same_account_same_currency(
-    db_client: AsyncClient, db_app, clean_db: None
+    db_client: AsyncClient, db_app, household: dict
 ):
-    household, account, _ = await _household_and_account(db_client, clean_db)
+    household, account, _ = await _household_and_account(db_client, household)
     account_id = UUID(account["id"])
     async with db_app.state.db_session_factory() as session:
         session.add(

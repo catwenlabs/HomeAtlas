@@ -6,7 +6,7 @@ PostgreSQL 17 是唯一业务事实来源。所有结构变更走 Alembic——�
 
 | schema | 表 |
 | -- | -- |
-| core | households / accounts / currencies / account_balances |
+| core | households / users / accounts / currencies / account_balances |
 | finance | categories / transactions / transfers |
 | system | audit_logs / import_batches / import_rows |
 
@@ -16,10 +16,14 @@ PostgreSQL 17 是唯一业务事实来源。所有结构变更走 Alembic——�
 - `0003_phase_2b_1` 创建导入表 `system.import_batches` / `system.import_rows`
   （Phase 2B-1 同步骨架，2B-3 复用同一结构支持 CSV/XLSX）；文件二进制不入库，
   只存路径、大小与 SHA-256，存储文件后缀随 `source_format` 为 `.csv` 或 `.xlsx`。
-- 同一次迁移写入 seed：6 个币种（CNY/USD/HKD/EUR/GBP/JPY）、默认家庭
-  （`默认家庭`，base CNY，Asia/Shanghai）、11 个默认分类（含系统内置
-  `金融手续费`）。
-- 新建家庭时服务层会克隆默认分类树，保证每个家庭都有可用分类。
+- `0004_phase_2a_users` 创建 `core.users`（`household_id` 多对一、`username` 唯一、
+  `password_hash`、`display_name`、`role`、`is_active`），并在确认无业务数据时
+  清理旧版迁移遗留的默认家庭。
+- **迁移不写入用户基础数据**：不再 seed 币种、默认家庭或分类。币种目录由代码
+  `app/modules/currencies/defaults.py` 内置为向导预填项，分类目录同理；只有用户在
+  首次部署向导中确认后才写入数据库。已有旧库升级后由 `POST /setup` 完成初始化；
+  `0004` 会在无业务数据时删除旧默认家庭，避免向导被误判为已初始化。
+- 新建家庭不再自动克隆分类树；分类由向导或 `POST /categories` 显式创建。
 
 ## 关键约束
 
@@ -30,6 +34,10 @@ PostgreSQL 17 是唯一业务事实来源。所有结构变更走 Alembic——�
   两行在同一事务内写入；余额聚合包含 `confirmed` 与 `reversed` 两态以互相抵消。
 - 交易生命周期写入 `system.audit_logs`：`transaction.create/update/confirm/delete/reverse`。
 - 分类：`parent_id <> id`；同一 household、父子类型一致、最多两级由 Service 校验。
+- 用户：`core.users.username` 全局唯一；`household_id` 外键级联删除；
+  `role IN ('owner','member')`；密码只存 bcrypt hash（`password_hash`），不存明文。
+  业务层保护最后一个 active owner 不被降级或停用。
+- 首次初始化写入 `core.users` 后，`GET /setup/status` 以“是否存在用户”判定已初始化。
 - 转账：`from_account_id <> to_account_id OR from_currency <> to_currency`；
   `fee >= 0`。`base_amount` / `base_currency` 固化转账的本位币价值；
   `base_exchange_rate` / `fee_exchange_rate` 仅为请求字段，不落库。
@@ -67,9 +75,12 @@ docker compose run --rm api alembic downgrade -1
 ## 测试数据库策略
 
 - 集成测试使用真实 PostgreSQL 的独立库 `home_atlas_test`（`tests/conftest.py` 每次会话先 DROP/CREATE，再跑 `alembic upgrade head`——与生产同一套迁移）。
-- 每个业务用例通过 `clean_db` fixture TRUNCATE 全部业务表（保留币种 seed）；
-  家庭等数据由用例自行创建。`system.import_rows` / `system.import_batches`
-  一并清理。
+- 迁移不再 seed 币种；测试会话在迁移后由 `seed_currencies` 单独写入内置币种目录。
+- 每个业务用例通过 `clean_db` fixture TRUNCATE 全部业务表（保留币种），随后调用
+  `POST /setup` 创建测试 owner 与家庭，并为 HTTP client 设置默认
+  `Authorization: Bearer`。`system.import_rows` / `system.import_batches` /
+  `system.audit_logs` / `core.users` 一并清理；需要第二家庭的用例通过
+  `create_household` fixture 直接插库，再用 `auth_for_household` 创建成员并领取独立 token。
 - 覆盖率配置 `concurrency = ["greenlet", "thread"]`，确保 SQLAlchemy async
   greenlet 切换后的代码仍被统计。
 

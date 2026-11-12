@@ -83,8 +83,9 @@
 
 ## 3. API 草案（`/api/v1/imports`）
 
-统一 envelope、`X-Household-Id` 作用域；上传支持 `Idempotency-Key`（2B-1 暂未启用），
-确认通过状态机天然幂等。2B-1 已实现下表端点（`GET /imports/{id}/template` 除外）。
+统一 envelope；家庭作用域由 JWT 派生（Phase 2A 起取代 `X-Household-Id`）；上传支持
+`Idempotency-Key`（2B-1 暂未启用），确认通过状态机天然幂等。2B-1 已实现下表端点
+（`GET /imports/{id}/template` 除外）。
 
 | 方法 | 路径 | 说明 |
 | -- | -- | -- |
@@ -487,7 +488,7 @@ API ──写批次+outbox──> PostgreSQL
   重复确认与重复回调幂等。
 - **执行**：余额校验、draft/confirmed 两种创建模式、单行失败不污染整批、
   Worker 崩溃续跑。
-- **隔离**：`X-Household-Id` 缺失/多家庭/跨家庭访问。
+- **隔离**：Bearer token 缺失/失效、跨家庭访问。
 - **审计**：每个动作都有记录，且不含完整原始数据。
 - **性能**：10,000 行 CSV 预览与执行在可接受时间内完成（目标 < 60s，本地环境）。
 
@@ -572,6 +573,8 @@ API ──写批次+outbox──> PostgreSQL
   状态机、文件限制、跨家庭隔离、审计与 OpenAPI。
 - 全量 99 项通过，覆盖率 97.46%；`ruff check` / `ruff format --check` /
   `mypy app` 通过。
+- Phase 2A 起导入接口与其他业务接口一样要求 `Authorization: Bearer <token>`，
+  家庭作用域由 JWT 派生；导入链路本身（上传/映射/预览/确认）不变。
 
 ## 16. 2B-3 实施记录（2026-11-12）
 
