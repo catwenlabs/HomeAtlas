@@ -25,7 +25,7 @@ Client ──> uvicorn (FastAPI app)
 | categories | finance | ✅ Phase 1.1 |
 | transactions | finance | ✅ Phase 1.2（opening_balance + 收支生命周期） |
 | transfers | finance | ✅ Phase 2E（同币种/跨币种/同账户换汇、手续费、冲正） |
-| imports | system | ✅ Phase 2B-1（CSV 上传、映射、同步预览/去重、确认生成交易） |
+| imports | system | ✅ Phase 2B-3（CSV/XLSX、模板、精确/模糊去重、批量行修正、确认生成交易） |
 | audit | system | 表 + 写入服务；审计查询 API 未定义 |
 | statistics | （跨 schema 只读聚合） | ✅ Phase 1.4（收支类 + 余额类分币种明细） |
 
@@ -111,7 +111,9 @@ Client ──> uvicorn (FastAPI app)
   账户/分类归属、分类类型、金额精度、外币汇率、日期、描述/流水号长度等
   逐行收集错误；有效行、无效行、重复行分别计数。
 - 去重顺序：同账户 `external_id` → 精确指纹（账户/类型/金额/币种/UTC 秒/描述）
-  → 批内重复；范围限定当前 household，排除开账与转账衍生流水。模糊匹配未实现。
+  → 批内重复；范围限定当前 household，排除开账与转账衍生流水。模糊匹配默认关闭，
+  开启后按同账户、同类型、同币种、金额相等、日期相差 ≤ 1 天、描述相似度 ≥ 0.85
+  标记 `duplicate` 并返回 `DUPLICATE_FUZZY` 相似度提示。
 - `PUT /rows/{row_id}` 可修正规范化数据或把行标记为 `valid` / `skipped`。
 - `POST /confirm` 同步执行：默认生成 `confirmed` 交易，可传 `create_status=draft`；
   `on_duplicate=skip` 跳过重复行，`allow` 允许导入。每行使用 savepoint，
@@ -121,9 +123,13 @@ Client ──> uvicorn (FastAPI app)
 - 导入流水 `source='import'`，固化 `base_amount`；不导入转账与开账余额。
 - 文件存 `IMPORT_STORAGE_DIR`（默认 `/tmp/homeatlas-imports`），数据库仅存路径、
   大小与 SHA-256。预览会重建行数据，手工修正应在预览后完成。
-- 审计动作：`import.create/mapping/preview/confirm/execute/row_update/cancel/delete`。
-- 2B-2 才引入 NATS JetStream + Outbox + Import Worker 与共享文件卷（**当前暂缓**，
-  继续使用 API 内同步执行）；2B-3 再补 Excel `.xlsx`、模糊去重、模板下载。
+- 审计动作：`import.create/mapping/preview/confirm/execute/row_update/cancel/delete`，
+  以及批量操作 `import.rows_bulk_update/rows_bulk_skip`。
+- 2B-3 增强已实现：Excel `.xlsx` 上传（`openpyxl` 只读首个工作表）、全局模板下载
+  `GET /imports/template?format=csv|xlsx`、可选模糊去重（默认关闭）、批量行修正
+  `PUT /imports/{id}/rows` 与按范围跳过 `POST /imports/{id}/rows/skip`（单次上限 500 行）。
+- 2B-2 引入 NATS JetStream + Outbox + Import Worker 与共享文件卷（**当前暂缓**，
+  继续使用 API 内同步执行）。
 
 ### 余额口径
 
@@ -175,7 +181,7 @@ structlog：开发环境 Console 渲染，生产（`APP_ENV=production`）JSON�
 
 - 无认证；`audit_logs.actor` 固定为 `system`。
 - 转账 API（Phase 2E）与统计 API（收支类 + 余额类分币种明细）已完成。
-- 数据导入 2B-1 同步骨架已完成（CSV）；NATS/Worker、Excel、模糊去重、
-  模板下载排期到 2B-2/2B-3。
+- 数据导入 2B-1 同步骨架与 2B-3 增强已完成（CSV/XLSX、模板下载、精确/模糊去重、
+  批量行修正）；NATS/Worker 异步化（2B-2）已决定暂缓。
 - 转账冲正生成的转账不可再次冲正，避免手续费反向链失控。
 - 余额类统计不折算总额（规格 §6.7）。

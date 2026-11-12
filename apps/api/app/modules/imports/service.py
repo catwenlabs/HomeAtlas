@@ -5,13 +5,15 @@ import csv
 import hashlib
 import io
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
+from openpyxl import Workbook, load_workbook
 from pydantic import ValidationError
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +35,8 @@ from app.modules.imports.schemas import (
     ImportConfirm,
     ImportMapping,
     ImportPreviewRead,
+    ImportRowBulkSkip,
+    ImportRowBulkUpdate,
     ImportRowRead,
     ImportRowUpdate,
 )
@@ -40,8 +44,28 @@ from app.modules.transactions.models import Transaction
 
 EXCHANGE_RATE_PLACES = 12
 MAX_COLUMNS = 100
+MAX_BULK_ROWS = 500
 PREVIEW_SAMPLE_ROWS = 50
 SAMPLE_ROWS = 10
+FUZZY_THRESHOLD = 0.85
+FUZZY_DATE_WINDOW_DAYS = 1
+TEMPLATE_COLUMNS = (
+    "交易日期",
+    "金额",
+    "收支方向",
+    "借方",
+    "贷方",
+    "备注",
+    "分类",
+    "币种",
+    "汇率",
+    "外部流水号",
+    "账户",
+)
+TEMPLATE_SAMPLE_ROWS = (
+    ("2026-06-01", "100.00", "收入", "", "", "工资", "工资", "CNY", "", "inc-001", "现金"),
+    ("2026-06-02", "30.00", "支出", "", "", "午餐", "餐饮", "CNY", "", "exp-001", "现金"),
+)
 DEFAULT_DATE_FORMATS = (
     "%Y/%m/%d",
     "%Y/%m/%d %H:%M:%S",
@@ -150,8 +174,9 @@ def _ensure_state(batch: ImportBatch, allowed: set[str], action: str) -> None:
         )
 
 
-def _storage_path(batch_id: UUID) -> Path:
-    return Path(get_settings().import_storage_dir) / f"{batch_id}.csv"
+def _storage_path(batch_id: UUID, source_format: str) -> Path:
+    suffix = "xlsx" if source_format == "xlsx" else "csv"
+    return Path(get_settings().import_storage_dir) / f"{batch_id}.{suffix}"
 
 
 async def _write_file(path: Path, data: bytes) -> None:
@@ -200,16 +225,22 @@ def _detect_delimiter(text: str) -> str:
         return ","
 
 
-def _parse_text(text: str, delimiter: str, header_row: int) -> ParsedFile:
-    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
-    raw_rows = [row for row in reader if any(cell.strip() for cell in row)]
-    if len(raw_rows) < header_row:
+def _build_parsed(
+    raw_rows: list[list[str]], header_row: int, delimiter: str, encoding: str
+) -> ParsedFile:
+    rows = [list(row) for row in raw_rows if any(cell.strip() for cell in row)]
+    if rows:
+        width = max(len(row) for row in rows)
+        while width and all(len(row) < width or not row[width - 1].strip() for row in rows):
+            width -= 1
+        rows = [row[:width] if len(row) > width else row for row in rows]
+    if len(rows) < header_row:
         raise AppError(
             "The file has no usable header row",
             status_code=400,
             error_code="IMPORT_HEADER_INVALID",
         )
-    headers = [cell.strip().lstrip("\ufeff") for cell in raw_rows[header_row - 1]]
+    headers = [cell.strip().lstrip("\ufeff") for cell in rows[header_row - 1]]
     if not headers or any(not header for header in headers):
         raise AppError(
             "The header row contains empty column names",
@@ -222,8 +253,8 @@ def _parse_text(text: str, delimiter: str, header_row: int) -> ParsedFile:
             status_code=400,
             error_code="IMPORT_HEADER_INVALID",
         )
-    rows = [list(row) for row in raw_rows[header_row:]]
-    if len(rows) > get_settings().import_max_rows:
+    data_rows = rows[header_row:]
+    if len(data_rows) > get_settings().import_max_rows:
         raise AppError(
             f"The file contains more than {get_settings().import_max_rows} rows",
             status_code=400,
@@ -231,10 +262,61 @@ def _parse_text(text: str, delimiter: str, header_row: int) -> ParsedFile:
         )
     return ParsedFile(
         headers=headers,
-        rows=rows,
+        rows=data_rows,
         delimiter=delimiter,
-        encoding="",
+        encoding=encoding,
     )
+
+
+def _parse_text(text: str, delimiter: str, header_row: int) -> ParsedFile:
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    raw_rows = [row for row in reader if any(cell.strip() for cell in row)]
+    return _build_parsed(raw_rows, header_row, delimiter, "")
+
+
+def _xlsx_cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return format(Decimal(str(value)), "f")
+    return str(value).strip()
+
+
+def _parse_xlsx(data: bytes, header_row: int) -> ParsedFile:
+    try:
+        workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as exc:
+        raise AppError(
+            "The uploaded file is not a readable .xlsx workbook",
+            status_code=415,
+            error_code="IMPORT_FILE_TYPE_UNSUPPORTED",
+        ) from exc
+    try:
+        if not workbook.worksheets:
+            raise AppError(
+                "The workbook contains no worksheets",
+                status_code=400,
+                error_code="IMPORT_HEADER_INVALID",
+            )
+        raw_rows = [
+            [_xlsx_cell_text(cell) for cell in row]
+            for row in workbook.worksheets[0].iter_rows(values_only=True)
+        ]
+    finally:
+        workbook.close()
+    return _build_parsed(raw_rows, header_row, "", "")
 
 
 def _mapping_from_batch(batch: ImportBatch) -> ImportMapping:
@@ -327,21 +409,41 @@ async def create_import(
     *,
     filename: str | None,
     data: bytes,
-    source_format: str,
+    source_format: str | None,
     account_id: UUID | None,
     allow_duplicate_file: bool,
 ) -> ImportBatch:
     settings = get_settings()
-    if source_format != "csv":
+    suffix = Path(filename or "").suffix.lower()
+    csv_suffixes = {".csv", ".txt"}
+    xlsx_suffixes = {".xlsx", ".xlsm"}
+    if source_format:
+        source_format = source_format.lower().lstrip(".")
+    elif suffix in xlsx_suffixes:
+        source_format = "xlsx"
+    else:
+        source_format = "csv"
+    if source_format not in {"csv", "xlsx"}:
         raise AppError(
-            "Only CSV import is supported in Phase 2B-1",
+            "Only CSV and XLSX import are supported",
             status_code=415,
             error_code="IMPORT_FILE_TYPE_UNSUPPORTED",
         )
-    suffix = Path(filename or "").suffix.lower()
-    if suffix and suffix not in {".csv", ".txt"}:
+    if suffix in csv_suffixes and source_format != "csv":
         raise AppError(
-            "Only .csv files are supported",
+            "The file extension does not match source_format",
+            status_code=415,
+            error_code="IMPORT_FILE_TYPE_UNSUPPORTED",
+        )
+    if suffix in xlsx_suffixes and source_format != "xlsx":
+        raise AppError(
+            "The file extension does not match source_format",
+            status_code=415,
+            error_code="IMPORT_FILE_TYPE_UNSUPPORTED",
+        )
+    if suffix and suffix not in csv_suffixes | xlsx_suffixes:
+        raise AppError(
+            "Unsupported file extension; use .csv, .txt, .xlsx or .xlsm",
             status_code=415,
             error_code="IMPORT_FILE_TYPE_UNSUPPORTED",
         )
@@ -358,9 +460,14 @@ async def create_import(
             error_code="IMPORT_HEADER_INVALID",
         )
 
-    text, encoding = _decode(data, None)
-    delimiter = _detect_delimiter(text)
-    parsed = _parse_text(text, delimiter, 1)
+    if source_format == "xlsx":
+        parsed = _parse_xlsx(data, 1)
+        encoding = ""
+        delimiter = ""
+    else:
+        text, encoding = _decode(data, None)
+        delimiter = _detect_delimiter(text)
+        parsed = _parse_text(text, delimiter, 1)
     sha256 = hashlib.sha256(data).hexdigest()
 
     if not allow_duplicate_file:
@@ -383,7 +490,7 @@ async def create_import(
     await _active_account(session, household.id, account_id)
 
     batch_id = uuid4()
-    path = _storage_path(batch_id)
+    path = _storage_path(batch_id, source_format)
     await _write_file(path, data)
     batch = ImportBatch(
         id=batch_id,
@@ -398,8 +505,8 @@ async def create_import(
         columns=parsed.headers,
         mapping={
             "header_row": 1,
-            "delimiter": delimiter,
-            "encoding": encoding,
+            "delimiter": delimiter or None,
+            "encoding": encoding or None,
             "columns": {},
         },
         total_rows=len(parsed.rows),
@@ -855,6 +962,42 @@ async def _build_context(
     )
 
 
+def _normalize_text(value: str | None) -> str:
+    return " ".join((value or "").casefold().split())
+
+
+def _fuzzy_match(
+    normalized: dict[str, Any],
+    candidates: list[Transaction],
+    threshold: float,
+    window: timedelta,
+) -> tuple[Transaction, float] | None:
+    account_id = UUID(str(normalized["account_id"]))
+    transaction_type = str(normalized["transaction_type"])
+    currency = str(normalized["currency"]).upper()
+    amount = Decimal(str(normalized["amount"]))
+    occurred_at = datetime.fromisoformat(str(normalized["transaction_date"]))
+    description = _normalize_text(normalized.get("description"))
+    best: tuple[Transaction, float] | None = None
+    for transaction in candidates:
+        if transaction.account_id != account_id:
+            continue
+        if transaction.transaction_type != transaction_type:
+            continue
+        if str(transaction.currency).strip().upper() != currency:
+            continue
+        if transaction.amount != amount:
+            continue
+        if abs(transaction.transaction_date - occurred_at) > window:
+            continue
+        score = SequenceMatcher(None, description, _normalize_text(transaction.description)).ratio()
+        if score < threshold:
+            continue
+        if best is None or score > best[1]:
+            best = (transaction, score)
+    return best
+
+
 async def _mark_duplicates(
     session: AsyncSession,
     batch: ImportBatch,
@@ -873,14 +1016,25 @@ async def _mark_duplicates(
     ]
     if not dates:
         return
-    start = min(dates)
-    end = max(dates)
+    account_ids = {
+        UUID(str(row.normalized_data["account_id"]))
+        for row in candidates
+        if row.normalized_data and row.normalized_data.get("account_id")
+    }
+    if not account_ids:
+        return
+
+    fuzzy = context.mapping.fuzzy_dedupe
+    window = timedelta(days=context.mapping.fuzzy_date_window_days) if fuzzy else timedelta(0)
+    start = min(dates) - window
+    end = max(dates) + window
 
     existing = list(
         (
             await session.scalars(
                 select(Transaction).where(
                     Transaction.household_id == batch.household_id,
+                    Transaction.account_id.in_(account_ids),
                     Transaction.transaction_type.in_(
                         (TransactionType.INCOME.value, TransactionType.EXPENSE.value)
                     ),
@@ -906,11 +1060,6 @@ async def _mark_duplicates(
         )
         fingerprint_to_id.setdefault(fingerprint, transaction.id)
 
-    account_ids = {
-        UUID(str(row.normalized_data["account_id"]))
-        for row in candidates
-        if row.normalized_data and row.normalized_data.get("account_id")
-    }
     external_ids = {
         str(row.normalized_data["external_id"])
         for row in candidates
@@ -964,6 +1113,23 @@ async def _mark_duplicates(
             duplicate_of = fingerprint_to_id.get(fingerprint)
         if duplicate_of is None and fingerprint in seen_in_batch:
             duplicate_of = seen_in_batch[fingerprint]
+        if duplicate_of is None and fuzzy:
+            match = _fuzzy_match(
+                normalized,
+                existing,
+                context.mapping.fuzzy_threshold,
+                window,
+            )
+            if match is not None:
+                matched, score = match
+                duplicate_of = matched.id
+                row.errors = [
+                    _error(
+                        "DUPLICATE_FUZZY",
+                        "description",
+                        f"Similar to an existing transaction (score {score:.2f})",
+                    )
+                ]
         if duplicate_of is not None or fingerprint in seen_in_batch:
             row.status = "duplicate"
             row.duplicate_of_transaction_id = duplicate_of
@@ -987,9 +1153,12 @@ async def preview_import(
             error_code="IMPORT_FILE_MISSING",
         )
     data = await _read_file(Path(batch.stored_path))
-    text, encoding = _decode(data, mapping.encoding)
-    delimiter = mapping.delimiter or _detect_delimiter(text)
-    parsed = _parse_text(text, delimiter, mapping.header_row)
+    if batch.source_format == "xlsx":
+        parsed = _parse_xlsx(data, mapping.header_row)
+    else:
+        text, _ = _decode(data, mapping.encoding)
+        delimiter = mapping.delimiter or _detect_delimiter(text)
+        parsed = _parse_text(text, delimiter, mapping.header_row)
     _validate_mapping(mapping, parsed.headers)
 
     await session.execute(delete(ImportRow).where(ImportRow.batch_id == batch.id))
@@ -1297,6 +1466,21 @@ async def list_rows(
     return list((await session.scalars(stmt)).all()), int(total or 0)
 
 
+async def _refresh_counts(session: AsyncSession, batch: ImportBatch) -> None:
+    counts = dict(
+        (
+            await session.execute(
+                select(ImportRow.status, func.count())
+                .where(ImportRow.batch_id == batch.id)
+                .group_by(ImportRow.status)
+            )
+        ).all()
+    )
+    batch.valid_rows = int(counts.get("valid", 0))
+    batch.invalid_rows = int(counts.get("invalid", 0))
+    batch.duplicate_rows = int(counts.get("duplicate", 0))
+
+
 async def update_row(
     session: AsyncSession,
     household: Household,
@@ -1335,33 +1519,106 @@ async def update_row(
         },
     )
     await session.flush()
-    batch.valid_rows = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(ImportRow)
-            .where(ImportRow.batch_id == batch.id, ImportRow.status == "valid")
-        )
-        or 0
-    )
-    batch.invalid_rows = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(ImportRow)
-            .where(ImportRow.batch_id == batch.id, ImportRow.status == "invalid")
-        )
-        or 0
-    )
-    batch.duplicate_rows = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(ImportRow)
-            .where(ImportRow.batch_id == batch.id, ImportRow.status == "duplicate")
-        )
-        or 0
-    )
+    await _refresh_counts(session, batch)
     await session.commit()
     await session.refresh(row)
     return row
+
+
+async def bulk_update_rows(
+    session: AsyncSession,
+    household: Household,
+    batch_id: UUID,
+    payload: ImportRowBulkUpdate,
+) -> tuple[ImportBatch, list[ImportRow]]:
+    batch = await get_batch(session, household.id, batch_id)
+    _ensure_state(batch, _EDITABLE_STATES, "edited")
+    row_ids = [item.row_id for item in payload.updates]
+    if len(set(row_ids)) != len(row_ids):
+        raise AppError(
+            "Bulk update contains duplicate row ids",
+            status_code=400,
+            error_code="IMPORT_ROW_DUPLICATE",
+        )
+    rows = list(
+        (
+            await session.scalars(
+                select(ImportRow).where(
+                    ImportRow.batch_id == batch.id,
+                    ImportRow.id.in_(row_ids),
+                )
+            )
+        ).all()
+    )
+    by_id = {row.id: row for row in rows}
+    missing = [str(row_id) for row_id in row_ids if row_id not in by_id]
+    if missing:
+        raise NotFoundError(
+            f"Import rows not found: {', '.join(missing[:5])}",
+            error_code="IMPORT_ROW_NOT_FOUND",
+        )
+    for item in payload.updates:
+        row = by_id[item.row_id]
+        if item.normalized_data is not None:
+            row.normalized_data = item.normalized_data
+            row.row_hash = None
+            row.errors = []
+            row.status = item.status or "pending"
+        elif item.status is not None:
+            row.status = item.status
+            if item.status == "valid":
+                row.errors = []
+    write_audit(
+        session,
+        household_id=household.id,
+        action="import.rows_bulk_update",
+        entity_type="import_batch",
+        entity_id=batch.id,
+        after={"updated_rows": len(row_ids)},
+    )
+    await session.flush()
+    await _refresh_counts(session, batch)
+    await session.commit()
+    await session.refresh(batch)
+    ordered = sorted(rows, key=lambda item: item.row_number)
+    for row in ordered:
+        await session.refresh(row)
+    return batch, ordered
+
+
+async def bulk_skip_rows(
+    session: AsyncSession,
+    household: Household,
+    batch_id: UUID,
+    payload: ImportRowBulkSkip,
+) -> tuple[ImportBatch, int]:
+    batch = await get_batch(session, household.id, batch_id)
+    _ensure_state(batch, _EDITABLE_STATES, "edited")
+    rows = list(
+        (
+            await session.scalars(
+                select(ImportRow).where(
+                    ImportRow.batch_id == batch.id,
+                    ImportRow.status == payload.scope,
+                )
+            )
+        ).all()
+    )
+    for row in rows:
+        row.status = "skipped"
+    write_audit(
+        session,
+        household_id=household.id,
+        action="import.rows_bulk_skip",
+        entity_type="import_batch",
+        entity_id=batch.id,
+        after={"scope": payload.scope, "skipped_rows": len(rows)},
+    )
+    await session.flush()
+    await _refresh_counts(session, batch)
+    await session.commit()
+    await session.refresh(batch)
+    return batch, len(rows)
 
 
 async def cancel_import(session: AsyncSession, household: Household, batch_id: UUID) -> ImportBatch:
@@ -1439,3 +1696,23 @@ def batch_response(
 
 def row_response(row: ImportRow) -> dict[str, Any]:
     return _row_response(row)
+
+
+def template_csv() -> bytes:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(TEMPLATE_COLUMNS)
+    writer.writerows(TEMPLATE_SAMPLE_ROWS)
+    return buffer.getvalue().encode("utf-8-sig")
+
+
+def template_xlsx() -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "导入模板"
+    sheet.append(list(TEMPLATE_COLUMNS))
+    for row in TEMPLATE_SAMPLE_ROWS:
+        sheet.append(list(row))
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()

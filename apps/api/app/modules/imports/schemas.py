@@ -41,6 +41,9 @@ class ImportMapping(BaseModel):
     category_map: dict[str, UUID] = Field(default_factory=dict)
     account_map: dict[str, UUID] = Field(default_factory=dict)
     date_formats: list[str] = Field(default_factory=list)
+    fuzzy_dedupe: bool = False
+    fuzzy_threshold: Annotated[float, Field(ge=0.5, le=1.0)] = 0.85
+    fuzzy_date_window_days: Annotated[int, Field(ge=0, le=7)] = 1
 
     @field_validator("delimiter")
     @classmethod
@@ -78,6 +81,20 @@ class ImportConfirm(BaseModel):
 class ImportRowUpdate(BaseModel):
     normalized_data: dict[str, Any] | None = None
     status: Literal["pending", "valid", "skipped"] | None = None
+
+
+class ImportRowBulkItem(BaseModel):
+    row_id: UUID
+    normalized_data: dict[str, Any] | None = None
+    status: Literal["pending", "valid", "skipped"] | None = None
+
+
+class ImportRowBulkUpdate(BaseModel):
+    updates: Annotated[list[ImportRowBulkItem], Field(min_length=1, max_length=500)]
+
+
+class ImportRowBulkSkip(BaseModel):
+    scope: Literal["invalid", "duplicate", "pending", "valid"] = "invalid"
 
 
 class ImportRowRead(BaseModel):

@@ -1,9 +1,9 @@
 # 数据导入设计评审（Phase 1.5）
 
-> 状态：**设计评审完成（2026-11-11）；Phase 2B-1 同步骨架已实现**。
+> 状态：**设计评审完成（2026-11-11）；Phase 2B-1 同步骨架与 2B-3 增强已实现**。
 > 2B-1 已落地 CSV 上传、字段映射、同步预览、去重、人工确认与交易生成；
-> 2B-2 异步化（NATS/Worker/Outbox）**已决定暂缓**，2B-3（Excel、模糊去重、
-> 模板下载）待排期。
+> 2B-3 补齐 Excel `.xlsx`、模板下载、模糊去重与批量行操作。2B-2 异步化
+> （NATS/Worker/Outbox）**已决定暂缓**。
 >
 > 依据：`specification.md` §8 Phase 1.5、§10 第二阶段 B；现有交易/余额/统计规则
 > 见 `architecture.md`、`database.md`。实现记录见本文 §15。
@@ -94,11 +94,13 @@
 | `PUT` | `/imports/{id}/mapping` | 保存字段映射与导入参数 |
 | `POST` | `/imports/{id}/preview` | 校验全部行（异步任务） |
 | `GET` | `/imports/{id}/rows` | 行列表，支持 `status`、分页 |
+| `PUT` | `/imports/{id}/rows` | 批量修正/标记行（单次最多 500 条） |
+| `POST` | `/imports/{id}/rows/skip` | 按范围跳过行（`invalid` / `duplicate` / `pending` / `valid`） |
 | `PUT` | `/imports/{id}/rows/{row_id}` | 手工修正单行规范化数据 |
 | `POST` | `/imports/{id}/confirm` | 人工确认并触发正式导入 |
 | `POST` | `/imports/{id}/cancel` | 取消未开始或处理中的批次 |
 | `DELETE` | `/imports/{id}` | 删除未确认批次（级联文件与行） |
-| `GET` | `/imports/{id}/template` | 可选：下载 CSV 模板 |
+| `GET` | `/imports/template?format=csv\|xlsx` | 下载标准导入模板（全局，不依赖批次） |
 
 ### 3.1 上传
 
@@ -242,10 +244,11 @@ Content-Type: application/json
 
 ### Excel
 
-- 首版只支持 `.xlsx`（`openpyxl`，`read_only=True`、`data_only=True`）。
-- 不支持 `.xls`、`.xlsm`、宏、外部链接、隐藏工作表自动导入。
-- 公式单元格只读取缓存值；无缓存值判为无效。
-- 默认读取第一个工作表，允许映射时指定 `sheet_name`。
+- 支持 `.xlsx` 与 `.xlsm`（`openpyxl`，`read_only=True`、`data_only=True`）。
+- 不支持 `.xls`、宏执行、外部链接、隐藏工作表自动导入。
+- 公式单元格只读取缓存值；无缓存值按空值处理。
+- 只读取第一个工作表。日期单元格输出 `YYYY-MM-DD HH:MM:SS`（纯日期为
+  `YYYY-MM-DD`），数字去掉浮点尾差后再进入统一规范化。
 
 ### 限制与安全
 
@@ -321,8 +324,9 @@ Content-Type: application/json
 1. **外部流水号**：`external_id` 在 `finance.transactions` 中同账户已存在 → 重复。
 2. **精确指纹**：`sha256(account_id | type | amount | currency | transaction_date(UTC, 秒) | normalized_description)`。
 3. **批内重复**：同一批次内指纹相同，保留 `row_number` 最小的一行，其余标 `duplicate`。
-4. **模糊匹配（可选，默认关闭）**：同账户、同类型、同币种、金额相同、日期相差 ≤ 1 天；
-   仅标记提示，不自动跳过。
+4. **模糊匹配（可选，默认关闭）**：同账户、同类型、同币种、金额相等、日期相差
+   ≤ 1 天、描述相似度（`SequenceMatcher`，大小写与空白归一后）≥ 0.85；
+   仅标记 `duplicate` 并返回 `DUPLICATE_FUZZY` 与相似度提示，不自动丢弃。
 
 规则：
 
@@ -499,10 +503,11 @@ API ──写批次+outbox──> PostgreSQL
    - 预览/执行投递、重试、DLQ、进度查询
    - Compose 增加 `nats`、`import-worker`、`import_data` volume
    - 暂缓理由与触发条件见 `development-roadmap.md` Task 007「决策」小节
-3. **2B-3 增强**
-   - Excel `.xlsx`
-   - 模糊去重、批量修正、模板下载
-   - 与 2A 前端导入页联调
+3. **2B-3 增强** ✅ 已完成（Task 008）
+   - Excel `.xlsx` / `.xlsm` 上传解析
+   - 模板下载 `GET /imports/template?format=csv|xlsx`
+   - 模糊去重（默认关闭，参数可调）、批量修正、按范围跳过
+   - 与 2A 前端导入页联调（2A 进行中）
 
 ## 13. 待评审决策
 
@@ -544,7 +549,7 @@ API ──写批次+outbox──> PostgreSQL
 - 批次状态机：`uploaded → mapped → previewed → (completed|partial|failed)`；
   `cancelled` 可从可编辑态进入；`processing/confirmed/expired` 为 2B-2 预留。
 - 去重：外部流水号 → 精确指纹 → 批内重复；排除开账与转账衍生流水；
-  模糊匹配默认关闭且未实现。
+  模糊匹配在 2B-3 补齐。
 - 执行：逐行 savepoint；确认态支出做负余额校验；`create_status=draft` 跳过；
   `on_duplicate=skip` 将重复行置 `skipped`；仅当 `imported == total_rows` 时
   `completed`，否则部分成功 `partial` 或 `failed`。
@@ -556,7 +561,7 @@ API ──写批次+outbox──> PostgreSQL
 
 - 预览/确认均为同步 `200`，不会出现持久化的 `confirmed`/`processing` 中间态。
 - 预览会删除并重建 `import_rows`：手工修正后再次预览会丢失修正。
-- 未实现上传幂等键、模板下载、Excel、模糊去重、保留期清理任务。
+- 未实现上传幂等键与保留期清理任务（Excel、模糊去重、模板下载已在 2B-3 补齐）。
 - 文件存放在 API 进程本地目录；容器重建或换实例后需重新上传（2B-2 共享卷解决）。
 - 确认只处理 `income`/`expense`，不导入转账与 `opening_balance`。
 
@@ -567,3 +572,33 @@ API ──写批次+outbox──> PostgreSQL
   状态机、文件限制、跨家庭隔离、审计与 OpenAPI。
 - 全量 99 项通过，覆盖率 97.46%；`ruff check` / `ruff format --check` /
   `mypy app` 通过。
+
+## 16. 2B-3 实施记录（2026-11-12）
+
+### 已落地
+
+- Excel：上传时按扩展名推断 `source_format`（`.xlsx` / `.xlsm`），也可显式传入；
+  显式值与扩展名不匹配返回 415 `IMPORT_FILE_TYPE_UNSUPPORTED`。`openpyxl` 只读
+  首个工作表，复用预解析、映射、预览与确认链路，文件按 `{batch_id}.xlsx` 存储。
+- 模板下载：`GET /api/v1/imports/template?format=csv|xlsx`，返回标准 11 列与两行
+  示例；CSV 为 `utf-8-sig`，XLSX 使用 `openpyxl` 生成。
+- 模糊去重：映射参数新增 `fuzzy_dedupe`（默认 `false`）、`fuzzy_threshold`
+  （0.5–1.0，默认 0.85）、`fuzzy_date_window_days`（0–7，默认 1）；命中时行置
+  `duplicate`，`duplicate_of_transaction_id` 指向最相似交易，`errors` 返回
+  `DUPLICATE_FUZZY` 与相似度。候选查询按账户与日期窗口预筛。
+- 批量行操作：
+  - `PUT /imports/{id}/rows`：最多 500 条，重复 `row_id` 返回 400
+    `IMPORT_ROW_DUPLICATE`，不存在返回 404 `IMPORT_ROW_NOT_FOUND`；
+  - `POST /imports/{id}/rows/skip`：`scope` 取 `invalid` / `duplicate` /
+    `pending` / `valid`，返回跳过行数；
+  - 两者都在可编辑态生效，完成后返回 409 `IMPORT_STATE_INVALID`，并写审计
+    `import.rows_bulk_update` / `import.rows_bulk_skip`。
+- 计数提取为 `_refresh_counts`，单行与批量修改后统一重算
+  `valid_rows` / `invalid_rows` / `duplicate_rows`。
+
+### 验证
+
+- `apps/api/tests/test_imports.py`：13 项集成测试，新增 XLSX 全流程、模板下载、
+  模糊去重开关与批量更新/跳过；全量 **103 项通过，覆盖率 96.91%**。
+- `ruff check` / `ruff format --check` / `mypy app` 通过；API 镜像已加入
+  `openpyxl` 依赖并重建。

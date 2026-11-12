@@ -4,7 +4,7 @@
 
 > 规格说明书：[Specification v1.3（issue #1 评论）](https://github.com/catwenlabs/HomeAtlas/issues/1#issuecomment-6788969821)，本地镜像 `docs/specification.md`。
 
-当前进度：**Phase 1.0–1.4、Phase 2E（转账与多币种）与 Phase 2B-1（数据导入同步骨架）完成；Phase 1.5 数据导入设计评审完成**。已实现家庭、账户、币种、分类、初始余额、账户余额查询，收入/支出的创建、确认、修改、删除、冲正、筛选与审计，同币种/跨币种/同账户换汇转账、手续费衍生支出与冲正，收入/支出、分类、月度/年度、资金流向、总览与账户余额统计，以及 CSV 上传 → 字段映射 → 同步预览/去重 → 人工确认 → 生成 `income`/`expense` 流水的导入闭环。Excel、模糊去重留到 2B-3；NATS/Worker 异步化（2B-2）已决定暂缓。
+当前进度：**Phase 1.0–1.4、Phase 2E（转账与多币种）、Phase 2B-1 与 2B-3（数据导入）完成；Phase 1.5 数据导入设计评审完成**。已实现家庭、账户、币种、分类、初始余额、账户余额查询，收入/支出的创建、确认、修改、删除、冲正、筛选与审计，同币种/跨币种/同账户换汇转账、手续费衍生支出与冲正，收入/支出、分类、月度/年度、资金流向、总览与账户余额统计，以及 CSV/XLSX 上传 → 字段映射 → 同步预览/去重（精确 + 可选模糊）→ 人工确认 → 生成 `income`/`expense` 流水的导入闭环，支持模板下载与批量行修正。NATS/Worker 异步化（2B-2）已决定暂缓。
 
 ## 快速开始
 
@@ -33,7 +33,7 @@ Swagger UI：<http://127.0.0.1:8000/docs>
 | Categories | `GET/POST /api/v1/categories`、`GET/PUT/DELETE /api/v1/categories/{id}` |
 | Transactions | `GET/POST /api/v1/transactions`、`GET/PUT/DELETE /api/v1/transactions/{id}`、`POST /api/v1/transactions/{id}/reverse` |
 | Transfers | `GET/POST /api/v1/transfers`、`GET/PUT/DELETE /api/v1/transfers/{id}`、`POST /api/v1/transfers/{id}/reverse` |
-| Imports | `POST/GET /api/v1/imports`、`GET/DELETE /api/v1/imports/{id}`、`PUT /api/v1/imports/{id}/mapping`、`POST /api/v1/imports/{id}/preview`、`GET /api/v1/imports/{id}/rows`、`PUT /api/v1/imports/{id}/rows/{row_id}`、`POST /api/v1/imports/{id}/confirm`、`POST /api/v1/imports/{id}/cancel` |
+| Imports | `POST/GET /api/v1/imports`、`GET/DELETE /api/v1/imports/{id}`、`PUT /api/v1/imports/{id}/mapping`、`POST /api/v1/imports/{id}/preview`、`GET /api/v1/imports/{id}/rows`、`PUT /api/v1/imports/{id}/rows`（批量）、`POST /api/v1/imports/{id}/rows/skip`、`PUT /api/v1/imports/{id}/rows/{row_id}`、`POST /api/v1/imports/{id}/confirm`、`POST /api/v1/imports/{id}/cancel`、`GET /api/v1/imports/template?format=csv\|xlsx` |
 | Statistics | `GET /api/v1/statistics/income-expense`、`/category`、`/monthly`、`/cashflow`、`/overview`、`/account-balances` |
 | 探针 | `GET /health`、`GET /ready`（不走 envelope） |
 

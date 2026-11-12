@@ -14,7 +14,8 @@ PostgreSQL 17 是唯一业务事实来源。所有结构变更走 Alembic——�
 - `0002_phase_1_1` 创建全部 8 张业务表，包含规格 §4 的 CHECK 约束、索引、
   状态机字段、冲正/衍生关联字段。
 - `0003_phase_2b_1` 创建导入表 `system.import_batches` / `system.import_rows`
-  （Phase 2B-1 同步骨架）；文件二进制不入库，只存路径、大小与 SHA-256。
+  （Phase 2B-1 同步骨架，2B-3 复用同一结构支持 CSV/XLSX）；文件二进制不入库，
+  只存路径、大小与 SHA-256，存储文件后缀随 `source_format` 为 `.csv` 或 `.xlsx`。
 - 同一次迁移写入 seed：6 个币种（CNY/USD/HKD/EUR/GBP/JPY）、默认家庭
   （`默认家庭`，base CNY，Asia/Shanghai）、11 个默认分类（含系统内置
   `金融手续费`）。
@@ -48,7 +49,7 @@ PostgreSQL 17 是唯一业务事实来源。所有结构变更走 Alembic——�
   `duplicate_of_transaction_id` 指向 `finance.transactions`，删除交易时置 NULL；
   删除批次时行级联删除。
 - 导入文件级去重按 `(household_id, file_sha256)` 查询已完成/部分完成批次；
-  行级去重不建唯一约束，在 Service 层按外部流水号与精确指纹判断。
+  行级去重不建唯一约束，在 Service 层按外部流水号、精确指纹与可选模糊匹配判断。
 
 ## 迁移命令
 

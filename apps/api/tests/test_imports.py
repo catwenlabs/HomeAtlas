@@ -1,12 +1,15 @@
-"""CSV import skeleton: upload, mapping, preview, dedupe, confirm (Phase 2B-1)."""
+"""CSV/XLSX import: upload, mapping, preview, dedupe, bulk edits, confirm (2B-1/2B-3)."""
 
 import asyncio
+import io
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from httpx import AsyncClient
+from openpyxl import Workbook, load_workbook
 from sqlalchemy import select
 
 from app.core.config import get_settings
@@ -65,11 +68,13 @@ async def _upload(
     content: bytes | None = None,
     filename: str = "import.csv",
     account_id: str | None = None,
-    source_format: str = "csv",
+    source_format: str | None = "csv",
     allow_duplicate_file: bool | None = None,
 ) -> Any:
     data = content if content is not None else (text or "").encode("utf-8")
-    form: dict[str, str] = {"source_format": source_format}
+    form: dict[str, str] = {}
+    if source_format is not None:
+        form["source_format"] = source_format
     if account_id is not None:
         form["account_id"] = account_id
     if allow_duplicate_file is not None:
@@ -164,6 +169,16 @@ async def _rows_by_number(response: dict) -> dict[int, dict]:
 
 def _remove_import_file(batch_id: str) -> None:
     Path(get_settings().import_storage_dir, f"{batch_id}.csv").unlink()
+
+
+def _xlsx_bytes(rows: list[list[object]]) -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    for row in rows:
+        sheet.append(row)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
 
 
 async def test_full_flow_upload_map_preview_confirm(
@@ -1036,3 +1051,273 @@ async def test_household_isolation_listing_and_account_scope(
     assert unknown_row.status_code == 404
     assert unknown_row.json()["error_code"] == "IMPORT_ROW_NOT_FOUND"
     assert household["id"]
+
+
+async def test_xlsx_upload_preview_confirm(
+    db_client: AsyncClient, household_headers: dict[str, str]
+) -> None:
+    account = await _create_account(db_client, household_headers)
+    await _set_opening(db_client, household_headers, account["id"], "1000")
+    content = _xlsx_bytes(
+        [
+            ["日期", "金额", "备注", "分类", "币种", "流水号"],
+            [datetime(2026, 6, 1), 100.5, "xlsx-income", "工资", "CNY", "xlsx-1"],
+            ["2026-06-02", -20, "xlsx-expense", "餐饮", "CNY", "xlsx-2"],
+        ]
+    )
+    uploaded = await _upload(
+        db_client,
+        household_headers,
+        content=content,
+        filename="book.xlsx",
+        source_format=None,
+        account_id=account["id"],
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    batch = uploaded.json()["data"]
+    assert batch["source_format"] == "xlsx"
+    assert batch["columns"] == ["日期", "金额", "备注", "分类", "币种", "流水号"]
+    assert batch["total_rows"] == 2
+
+    columns = {
+        "transaction_date": "日期",
+        "amount": "金额",
+        "description": "备注",
+        "category": "分类",
+        "currency": "币种",
+        "external_id": "流水号",
+    }
+    mapped = await _mapping(db_client, household_headers, batch["id"], columns)
+    assert mapped.status_code == 200, mapped.text
+    previewed = await _preview(db_client, household_headers, batch["id"])
+    assert previewed.status_code == 200, previewed.text
+    data = previewed.json()["data"]
+    assert data["valid_rows"] == 2
+    assert data["invalid_rows"] == 0
+    rows = await _rows_by_number(previewed.json())
+    assert rows[1]["normalized_data"]["amount"] == "100.50000000"
+    assert rows[1]["normalized_data"]["transaction_date"].startswith("2026-06-01")
+    assert rows[2]["normalized_data"]["transaction_type"] == "expense"
+
+    confirmed = await _confirm(db_client, household_headers, batch["id"])
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["data"]["status"] == "completed"
+    imported = [
+        item
+        for item in await _transactions(db_client, household_headers, account["id"])
+        if item["source"] == "import"
+    ]
+    assert len(imported) == 2
+    assert {item["description"] for item in imported} == {"xlsx-income", "xlsx-expense"}
+
+
+async def test_template_download_csv_and_xlsx(db_client: AsyncClient) -> None:
+    csv_response = await db_client.get("/api/v1/imports/template?format=csv")
+    assert csv_response.status_code == 200, csv_response.text
+    assert "text/csv" in csv_response.headers["content-type"]
+    assert "attachment" in csv_response.headers["content-disposition"]
+    csv_text = csv_response.content.decode("utf-8-sig")
+    assert csv_text.splitlines()[0] == ",".join(
+        [
+            "交易日期",
+            "金额",
+            "收支方向",
+            "借方",
+            "贷方",
+            "备注",
+            "分类",
+            "币种",
+            "汇率",
+            "外部流水号",
+            "账户",
+        ]
+    )
+    assert len(csv_text.splitlines()) == 3
+
+    xlsx_response = await db_client.get("/api/v1/imports/template?format=xlsx")
+    assert xlsx_response.status_code == 200, xlsx_response.text
+    assert "spreadsheetml" in xlsx_response.headers["content-type"]
+    workbook = load_workbook(io.BytesIO(xlsx_response.content), read_only=True)
+    try:
+        sheet = workbook.worksheets[0]
+        values = list(sheet.iter_rows(values_only=True))
+    finally:
+        workbook.close()
+    assert values[0][0] == "交易日期"
+    assert values[1][0] == "2026-06-01"
+    assert len(values) == 3
+
+    invalid = await db_client.get("/api/v1/imports/template?format=pdf")
+    assert invalid.status_code == 422
+
+
+async def test_fuzzy_duplicate_detection_opt_in(
+    db_client: AsyncClient, household_headers: dict[str, str]
+) -> None:
+    account = await _create_account(db_client, household_headers)
+    await _set_opening(db_client, household_headers, account["id"], "1000")
+    dining = await _find_category(db_client, household_headers, "餐饮")
+    existing = await db_client.post(
+        "/api/v1/transactions",
+        headers=household_headers,
+        json={
+            "account_id": account["id"],
+            "category_id": dining["id"],
+            "transaction_type": "expense",
+            "amount": "100",
+            "transaction_date": "2026-06-01T08:00:00+08:00",
+            "description": "午餐费用",
+            "status": "confirmed",
+        },
+    )
+    assert existing.status_code == 201, existing.text
+
+    csv_text = "日期,金额,备注\n2026-06-02,-100,午餐费\n2026-06-06,-100,午餐费用\n"
+    columns = {
+        "transaction_date": "日期",
+        "amount": "金额",
+        "description": "备注",
+    }
+    uploaded = await _upload(db_client, household_headers, csv_text, account_id=account["id"])
+    assert uploaded.status_code == 201, uploaded.text
+    batch_id = uploaded.json()["data"]["id"]
+    assert (await _mapping(db_client, household_headers, batch_id, columns)).status_code == 200
+    plain = await _preview(db_client, household_headers, batch_id)
+    assert plain.status_code == 200, plain.text
+    assert plain.json()["data"]["valid_rows"] == 2
+    assert plain.json()["data"]["duplicate_rows"] == 0
+
+    fuzzy = await _mapping(
+        db_client,
+        household_headers,
+        batch_id,
+        columns,
+        fuzzy_dedupe=True,
+        fuzzy_threshold=0.85,
+        fuzzy_date_window_days=1,
+    )
+    assert fuzzy.status_code == 200, fuzzy.text
+    previewed = await _preview(db_client, household_headers, batch_id)
+    assert previewed.status_code == 200, previewed.text
+    data = previewed.json()["data"]
+    assert data["valid_rows"] == 1
+    assert data["duplicate_rows"] == 1
+    rows = await _rows_by_number(previewed.json())
+    assert rows[1]["status"] == "duplicate"
+    assert rows[1]["duplicate_of_transaction_id"] == existing.json()["data"]["id"]
+    assert rows[1]["errors"][0]["code"] == "DUPLICATE_FUZZY"
+    assert rows[2]["status"] == "valid"
+
+    confirmed = await _confirm(db_client, household_headers, batch_id)
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["data"]["status"] == "partial"
+    assert confirmed.json()["data"]["imported_rows"] == 1
+
+
+async def test_bulk_row_update_and_skip(
+    db_client: AsyncClient,
+    db_app: Any,
+    household_headers: dict[str, str],
+) -> None:
+    account = await _create_account(db_client, household_headers)
+    await _set_opening(db_client, household_headers, account["id"], "1000")
+    salary = await _find_category(db_client, household_headers, "工资")
+    csv_text = "日期,金额,备注\nbad-date,10,broken-1\n2026-06-02,10,good\nbad-date,20,broken-2\n"
+    uploaded = await _upload(db_client, household_headers, csv_text, account_id=account["id"])
+    assert uploaded.status_code == 201, uploaded.text
+    batch_id = uploaded.json()["data"]["id"]
+    columns = {"transaction_date": "日期", "amount": "金额", "description": "备注"}
+    assert (await _mapping(db_client, household_headers, batch_id, columns)).status_code == 200
+    previewed = await _preview(db_client, household_headers, batch_id)
+    assert previewed.status_code == 200, previewed.text
+    assert previewed.json()["data"]["valid_rows"] == 1
+    assert previewed.json()["data"]["invalid_rows"] == 2
+    rows = await _rows_by_number(previewed.json())
+
+    skipped = await db_client.post(
+        f"/api/v1/imports/{batch_id}/rows/skip",
+        headers=household_headers,
+        json={"scope": "invalid"},
+    )
+    assert skipped.status_code == 200, skipped.text
+    assert skipped.json()["data"]["skipped_rows"] == 2
+    assert skipped.json()["data"]["batch"]["invalid_rows"] == 0
+
+    bulk = await db_client.put(
+        f"/api/v1/imports/{batch_id}/rows",
+        headers=household_headers,
+        json={
+            "updates": [
+                {
+                    "row_id": rows[1]["id"],
+                    "status": "valid",
+                    "normalized_data": {
+                        "account_id": account["id"],
+                        "transaction_type": "income",
+                        "amount": "20.00000000",
+                        "currency": "CNY",
+                        "exchange_rate": "1",
+                        "base_amount": "20.00000000",
+                        "base_currency": "CNY",
+                        "transaction_date": "2026-06-01T00:00:00+08:00",
+                        "exchange_rate_date": "2026-06-01",
+                        "category_id": salary["id"],
+                        "description": "bulk-fixed",
+                        "row_number": 1,
+                    },
+                }
+            ]
+        },
+    )
+    assert bulk.status_code == 200, bulk.text
+    assert bulk.json()["data"]["items"][0]["status"] == "valid"
+    assert bulk.json()["data"]["batch"]["valid_rows"] == 2
+
+    duplicate_ids = await db_client.put(
+        f"/api/v1/imports/{batch_id}/rows",
+        headers=household_headers,
+        json={
+            "updates": [
+                {"row_id": rows[2]["id"], "status": "skipped"},
+                {"row_id": rows[2]["id"], "status": "valid"},
+            ]
+        },
+    )
+    assert duplicate_ids.status_code == 400
+    assert duplicate_ids.json()["error_code"] == "IMPORT_ROW_DUPLICATE"
+
+    unknown = await db_client.put(
+        f"/api/v1/imports/{batch_id}/rows",
+        headers=household_headers,
+        json={
+            "updates": [
+                {
+                    "row_id": "00000000-0000-0000-0000-000000000099",
+                    "status": "skipped",
+                }
+            ]
+        },
+    )
+    assert unknown.status_code == 404
+    assert unknown.json()["error_code"] == "IMPORT_ROW_NOT_FOUND"
+
+    async with db_app.state.db_session_factory() as session:
+        logs = list(
+            (
+                await session.scalars(select(AuditLog).where(AuditLog.entity_id == UUID(batch_id)))
+            ).all()
+        )
+    actions = {log.action for log in logs}
+    assert {"import.rows_bulk_skip", "import.rows_bulk_update"} <= actions
+
+    confirmed = await _confirm(db_client, household_headers, batch_id)
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["data"]["status"] == "partial"
+    assert confirmed.json()["data"]["imported_rows"] == 2
+    completed_edit = await db_client.post(
+        f"/api/v1/imports/{batch_id}/rows/skip",
+        headers=household_headers,
+        json={"scope": "valid"},
+    )
+    assert completed_edit.status_code == 409
+    assert completed_edit.json()["error_code"] == "IMPORT_STATE_INVALID"

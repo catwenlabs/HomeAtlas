@@ -11,6 +11,7 @@
 | 1.5 | 数据导入预留：接口、模型、去重与异步流程设计评审 | ✅ 设计评审完成（实现移至 2B） |
 | 2A/2B/2C/2D | Web 前端 / 异步导入 / 投资与资产 / Grafana | ⬜ 第一阶段稳定后 |
 | 2B-1 | 数据导入同步骨架：CSV 上传、映射、预览/去重、确认生成交易 | ✅ 完成（Task 007） |
+| 2B-3 | 数据导入增强：Excel、模板下载、模糊去重、批量行修正 | ✅ 完成（Task 008） |
 | 2E（原 Phase 1.3） | 转账与多币种：跨币种、手续费衍生支出、余额核对 | ✅ 完成（Task 006） |
 
 > **排期调整（2026-11-11）**：原 Phase 1.3「转账与多币种」整体移入第二阶段（记为 2E），
@@ -219,6 +220,29 @@
   共享文件卷与进度查询留到 2B-2。
 - 文件保存在 API 容器本地目录，容器重建后文件丢失；批次会返回
   `IMPORT_FILE_MISSING`，需重新上传。
+
+### Task 008（Phase 2B-3）已完成（2026-11-12）
+
+- Excel `.xlsx` / `.xlsm` 上传与解析：`openpyxl` 读取首个工作表，复用映射/预览/
+  确认链路；日期与数字单元格做确定性字符串化；扩展名与 `source_format` 不匹配
+  返回 415。
+- 模板下载：`GET /api/v1/imports/template?format=csv|xlsx`，返回标准 11 列与两行
+  示例。
+- 模糊去重：默认关闭；开启后按同账户、同类型、同币种、金额相等、日期相差
+  ≤ 1 天、描述相似度 ≥ 0.85 标记 `duplicate`，并在行错误中给出 `DUPLICATE_FUZZY`
+  与相似度；阈值与日期窗口可配置。
+- 批量行操作：`PUT /imports/{id}/rows` 批量修正/标记（最多 500 条），
+  `POST /imports/{id}/rows/skip` 按 `invalid|duplicate|pending|valid` 范围跳过；
+  计数统一重算，并写审计 `import.rows_bulk_update` / `import.rows_bulk_skip`。
+- 文件按 `{batch_id}.csv` / `{batch_id}.xlsx` 存储；依赖新增 `openpyxl`。
+- 测试：`tests/test_imports.py` 扩到 13 项；全量 **103 项通过，覆盖率 96.91%**；
+  ruff / mypy strict 通过。
+
+### Phase 2B-3 已知边界
+
+- XLSX 只读第一个工作表，不支持 `.xls`、宏执行与外部链接。
+- 模糊去重只在映射参数开启时生效，命中仅标记为 `duplicate`，不自动物理删除。
+- 预览仍会重建行数据，批量修正应在预览后、确认前完成。
 
 ### 决策：2B-2 异步化暂缓（2026-11-11）
 
