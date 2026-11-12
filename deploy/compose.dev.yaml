@@ -1,0 +1,17 @@
+# Local development overlay (used by the root Makefile):
+#   docker compose -f deploy/docker-compose.yml -f deploy/compose.dev.yaml up -d postgres
+#
+# Publishes postgres on 127.0.0.1:54321 and attaches it to a routable `dev`
+# network — the `backend` network in the base file is internal-only, so ports
+# published there are unreachable from the host. The production stack (plain
+# docker-compose.yml) is unaffected by this overlay.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:54321:5432"
+    networks:
+      - backend
+      - dev
+
+networks:
+  dev: {}
