@@ -768,3 +768,13 @@ PostgreSQL 数据优先放在可靠的本地 SSD 存储。备份放 Unraid，并
 | 10 | §6.8 分页出参 `{items, total, page, page_size}`、error_code 枚举与 HTTP 映射；/health 拆分 /ready（DB 检查） | 评审共识 |
 | 11 | 约束与索引：金额/手续费 CHECK、转账双方同 household、分类层级约束（同家庭/同类型/两级/禁环）、account_balances 唯一键含 source、audit_logs 补 household_id | 第三评审 + B |
 | 12 | §9 补测试基建：pytest-asyncio、真实 PG、事务回滚隔离、覆盖率 ≥80%、GitHub Actions CI；migration 执行通道定案 `docker compose run --rm api alembic upgrade head` | 第三评审 |
+
+## 附录 B：v1.4 修订记录（2026-11-12，Phase 2C 设计评审）
+
+| # | 修订 | 来源 |
+| -- | -- | -- |
+| 1 | §10 2C 范围调整：证券逐笔交易、股息、持仓明细与 market 行情 schema **暂缓**（持仓级 investments + 贷款 + 净资产快照先行）；`finance.trades` 前向预留，`investment_type` 含 stock/fund 保持兼容 | [asset-design.md](asset-design.md) §2.2 + 独立架构二审 |
+| 2 | 2C 新增 `finance.exchange_rates`（家庭作用域）与账户扩展（`annual_rate` / `liquidity` / `credit_limit`，account_type 增加 `credit` / `investment`）；§519 的总额折算随 2C-1 落地 | asset-design §4.1–4.2 |
+| 3 | 负余额规则细化：credit 账户放行透支（§430 的 2C 承诺兑现），守卫覆盖 transactions / transfers / imports 全部校验点；credit_limit 软校验默认开启 | asset-design §5.1 |
+| 4 | 投资本金走内部转账（不得直改余额）、赎回损益衍生收支计入统计、`investment_transfers` 关联表保证冲正联动 | asset-design §4.6/§5.2 |
+| 5 | 净资产唯一口径公式与 `unmapped_cash` 诊断字段定案；快照仅限当日（不接受历史补录） | asset-design §5.2/§6.5 |
