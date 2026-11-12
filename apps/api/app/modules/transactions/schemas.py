@@ -45,6 +45,9 @@ class TransactionUpdate(BaseModel):
     description: Description = None
     external_id: Annotated[str | None, Field(max_length=255)] = None
     status: Literal["draft", "confirmed"] | None = None
+    # Optimistic concurrency guard: when provided, the write is rejected with
+    # TRANSACTION_CONFLICT if the row's updated_at no longer matches.
+    expected_updated_at: datetime | None = None
 
     _currency = field_validator("currency")(_upper_currency)
 

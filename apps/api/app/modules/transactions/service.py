@@ -34,6 +34,9 @@ OPENING_BALANCE_SOURCE = TransactionSource.MANUAL.value
 EXCHANGE_RATE_PLACES = 12
 
 _MANUAL_TYPES = (TransactionType.INCOME.value, TransactionType.EXPENSE.value)
+# Confirmed transactions may only have these fields corrected in place
+# (spec v1.4 section 4.5); every financial field must go through reversal.
+_CONFIRMED_METADATA_FIELDS = frozenset({"category_id", "description"})
 _SORTABLE = {
     "transaction_date": Transaction.transaction_date,
     "amount": Transaction.amount,
@@ -67,14 +70,26 @@ def _transaction_response(transaction: Transaction) -> dict[str, Any]:
 
 
 async def get_transaction(
-    session: AsyncSession, household_id: UUID, transaction_id: UUID
+    session: AsyncSession,
+    household_id: UUID,
+    transaction_id: UUID,
+    *,
+    for_update: bool = False,
 ) -> Transaction:
-    transaction = await session.scalar(
-        select(Transaction).where(
-            Transaction.id == transaction_id,
-            Transaction.household_id == household_id,
-        )
+    """Load a household-scoped transaction.
+
+    Mutating paths must pass ``for_update=True`` so the load takes a row lock:
+    status/staleness checks and the eventual write then happen atomically, and
+    a concurrent writer (e.g. a reversal landing between check and commit)
+    cannot slip past on a stale in-memory snapshot.
+    """
+    statement = select(Transaction).where(
+        Transaction.id == transaction_id,
+        Transaction.household_id == household_id,
     )
+    if for_update:
+        statement = statement.with_for_update()
+    transaction = await session.scalar(statement)
     if transaction is None:
         raise NotFoundError("Transaction not found", error_code="TRANSACTION_NOT_FOUND")
     return transaction
@@ -331,21 +346,105 @@ async def create_transaction(
     return transaction
 
 
+def _as_utc(moment: datetime) -> datetime:
+    return moment.astimezone(UTC) if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def _ensure_not_stale(transaction: Transaction, expected: datetime | None) -> None:
+    """Optimistic concurrency guard for shared household records."""
+    if expected is None:
+        return
+    if _as_utc(expected) != _as_utc(transaction.updated_at):
+        raise AppError(
+            "Transaction was updated by someone else; reload the record and retry",
+            status_code=409,
+            error_code="TRANSACTION_CONFLICT",
+        )
+
+
+async def _update_confirmed_metadata(
+    session: AsyncSession,
+    household: Household,
+    transaction: Transaction,
+    changes: dict[str, Any],
+) -> Transaction:
+    """Correct classification/description on a confirmed transaction.
+
+    Amounts, accounts, dates and status stay immutable (reversal only) so
+    balances, reconciliation snapshots and fixed exchange rates never drift.
+    """
+    if transaction.transaction_type not in _MANUAL_TYPES:
+        raise AppError(
+            "Opening-balance transactions can only be changed via the "
+            "account opening-balance endpoint",
+            status_code=409,
+            error_code="TRANSACTION_NOT_EDITABLE",
+        )
+    if transaction.transfer_id is not None:
+        raise AppError(
+            "Transfer-derived transactions must be edited with their transfer",
+            status_code=409,
+            error_code="TRANSACTION_LINKED_TO_TRANSFER",
+        )
+    disallowed = sorted(set(changes) - _CONFIRMED_METADATA_FIELDS)
+    if disallowed:
+        raise AppError(
+            "Confirmed transactions only allow updating "
+            f"{sorted(_CONFIRMED_METADATA_FIELDS)}; immutable fields: "
+            f"{', '.join(disallowed)}. Reverse the transaction to correct them.",
+            status_code=409,
+            error_code="TRANSACTION_FIELD_IMMUTABLE",
+        )
+
+    category_id = changes.get("category_id")
+    if category_id is not None:
+        await _resolve_category(session, household.id, category_id, transaction.transaction_type)
+
+    before = _audit_data(transaction)
+    if "category_id" in changes:
+        transaction.category_id = category_id
+    if "description" in changes:
+        transaction.description = changes["description"]
+    after = _audit_data(transaction)
+    if before != after:
+        write_audit(
+            session,
+            household_id=household.id,
+            action="transaction.update_metadata",
+            entity_type="transaction",
+            entity_id=transaction.id,
+            before=before,
+            after=after,
+        )
+    await session.commit()
+    await session.refresh(transaction)
+    return transaction
+
+
 async def update_transaction(
     session: AsyncSession,
     household: Household,
     transaction_id: UUID,
     payload: TransactionUpdate,
 ) -> Transaction:
-    transaction = await get_transaction(session, household.id, transaction_id)
-    if transaction.status != TransactionStatus.DRAFT.value:
+    # Row lock makes the status/staleness checks and the write atomic:
+    # a concurrent reversal or edit commits before we act, so the checks
+    # below always see committed truth, never a stale snapshot.
+    transaction = await get_transaction(session, household.id, transaction_id, for_update=True)
+    if transaction.status == TransactionStatus.REVERSED.value:
         raise AppError(
-            "Only draft transactions can be modified",
+            "Reversed transactions are final and cannot be modified",
             status_code=409,
             error_code="TRANSACTION_NOT_EDITABLE",
         )
+    _ensure_not_stale(transaction, payload.expected_updated_at)
+    if transaction.status == TransactionStatus.CONFIRMED.value:
+        changes = payload.model_dump(exclude_unset=True)
+        changes.pop("expected_updated_at", None)
+        return await _update_confirmed_metadata(session, household, transaction, changes)
 
     changes = payload.model_dump(exclude_unset=True)
+    changes.pop("expected_updated_at", None)
     before = _audit_data(transaction)
 
     transaction_type = str(changes.get("transaction_type", transaction.transaction_type))
@@ -435,7 +534,7 @@ async def update_transaction(
 async def delete_transaction(
     session: AsyncSession, household: Household, transaction_id: UUID
 ) -> None:
-    transaction = await get_transaction(session, household.id, transaction_id)
+    transaction = await get_transaction(session, household.id, transaction_id, for_update=True)
     if transaction.status != TransactionStatus.DRAFT.value:
         raise AppError(
             "Only draft transactions can be deleted",
@@ -460,7 +559,7 @@ async def reverse_transaction(
     transaction_id: UUID,
     payload: TransactionReverse,
 ) -> Transaction:
-    original = await get_transaction(session, household.id, transaction_id)
+    original = await get_transaction(session, household.id, transaction_id, for_update=True)
     if original.status != TransactionStatus.CONFIRMED.value:
         raise AppError(
             "Only confirmed transactions can be reversed",

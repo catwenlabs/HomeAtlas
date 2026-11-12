@@ -273,7 +273,9 @@ source 枚举：
 - **opening_balance：豁免恒正规则，允许负数**（为第二阶段 C 负债/透支开账预留；Phase 1 正常场景为非负）。
 - opening_balance 不计入任何收支统计；统计与余额相关查询中，收支统计必须显式过滤 `transaction_type != 'opening_balance'`。
 - currency 可为任一激活币种，不限于账户默认币种；exchange_rate 与 base_amount 记录规则同 v1.2（同本位币时 rate = 1）。
-- 修改（PUT）：仅 draft 状态可修改任意字段；confirmed 及之后状态拒绝修改，必须走冲正。
+- 修改（PUT）：draft 状态可修改任意字段；confirmed 状态仅允许修改 `category_id` 与 `description`（元数据修正，409 `TRANSACTION_FIELD_IMMUTABLE` 拒绝其余字段）；reversed 拒绝一切修改。转账派生流水（`transfer_id` 非空）在 confirmed 状态同样禁止元数据修正（409 `TRANSACTION_LINKED_TO_TRANSFER`）。
+- 修改（PUT）支持乐观锁：可选 `expected_updated_at` 字段与记录当前 `updated_at` 不符时返回 409 `TRANSACTION_CONFLICT`。
+- confirmed 元数据修正写审计动作 `transaction.update_metadata`（before/after）；财务字段（金额、账户、币种、汇率、日期、状态）修正必须走冲正。
 - 删除（DELETE）：仅 draft 状态可物理删除；confirmed 之后拒绝（见 5.5）。
 - 冲正（reverse）：对 confirmed 记录生成一条关联反向记录（amount 相同、类型取反方向记账、reverses_transaction_id 指向原记录），原记录 status 置 reversed；冲正与反向记录在同一事务中落库。
 - reverses_transaction_id / transfer_id 有值时，DB 外键指向 finance.transactions.id / finance.transfers.id。
@@ -434,9 +436,9 @@ Current Balance =
 
 - 状态机：`draft → confirmed → reversed`（transactions 与 transfers 一致）。
 - draft：可任意修改（PUT）、可物理删除（DELETE）、可确认。
-- confirmed：禁止修改、禁止物理删除；修正只能冲正（reverse 生成关联反向记录）或"冲正 + 新建正确记录"。
+- confirmed：财务字段（金额、账户、币种、汇率、日期、类型、状态）禁止修改与物理删除；仅允许修正元数据字段 `category_id` / `description`（审计动作 `transaction.update_metadata`，统计为实时聚合、无快照表，修正追溯生效）；财务字段的修正只能冲正（reverse 生成关联反向记录）或"冲正 + 新建正确记录"。
 - reversed：终态，禁止一切修改与删除。
-- 已确认流水的冲正必须留审计记录（before/after + 关联链）。
+- 已确认流水的冲正必须留审计记录（before/after + 关联链）；元数据修正同样必须留 before/after 审计记录。
 
 ## 6. API 设计
 
@@ -488,7 +490,7 @@ Current Balance =
 - GET /transactions
 - POST /transactions
 - GET /transactions/{id}
-- PUT /transactions/{id}（仅 draft）
+- PUT /transactions/{id}（draft 全字段；confirmed 仅 `category_id` / `description`，可选 `expected_updated_at` 乐观锁）
 - DELETE /transactions/{id}（仅 draft）
 - POST /transactions/{id}/reverse（仅 confirmed）
 

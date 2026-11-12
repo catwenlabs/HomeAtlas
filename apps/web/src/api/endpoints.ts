@@ -71,6 +71,8 @@ export interface TransactionInput {
   transaction_date?: string;
   description?: string | null;
   status?: "draft" | "confirmed";
+  /** Optimistic lock: reject with 409 TRANSACTION_CONFLICT when stale. */
+  expected_updated_at?: string;
 }
 
 export interface TransferInput {

@@ -3,7 +3,8 @@ import { Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { transactionsApi, type TransactionQuery } from "../api/endpoints";
-import type { Transaction } from "../api/types";
+import { ApiError } from "../api/client";
+import type { Page, Transaction } from "../api/types";
 import {
   Badge,
   Button,
@@ -46,6 +47,26 @@ function emptyForm(accountId = "", currency = "CNY"): FormState {
     description: "",
     status: "confirmed",
   };
+}
+
+function freshestUpdatedAt(
+  queryClient: ReturnType<typeof useQueryClient>,
+  transaction: Transaction,
+): string | undefined {
+  for (const [, page] of queryClient.getQueriesData<Page<Transaction>>({
+    queryKey: ["transactions"],
+  })) {
+    const hit = page?.items.find((item) => item.id === transaction.id);
+    if (hit) return hit.updated_at;
+  }
+  return transaction.updated_at;
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof ApiError && error.code === "TRANSACTION_CONFLICT") {
+    return "记录刚被其他成员修改，列表已刷新，请重新点击保存。";
+  }
+  return errorMessage(error);
 }
 
 export function TransactionsPage() {
@@ -106,22 +127,42 @@ export function TransactionsPage() {
   });
 
   const update = useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload: FormState }) =>
-      transactionsApi.update(id, {
-        account_id: payload.account_id,
-        category_id: payload.category_id || null,
-        transaction_type: payload.transaction_type,
-        amount: payload.amount,
-        currency: payload.currency,
-        transaction_date: toIso(payload.transaction_date),
-        description: payload.description || null,
-        status: payload.status,
-      }),
+    mutationFn: ({ transaction, payload }: { transaction: Transaction; payload: FormState }) => {
+      // Confirmed records only accept metadata corrections; financial fields
+      // must go through reversal. expected_updated_at guards against
+      // concurrent edits by other household members; prefer the freshest
+      // cached token so a retry after a conflict does not replay a stale one.
+      const base =
+        transaction.status === "confirmed"
+          ? {
+              category_id: payload.category_id || null,
+              description: payload.description || null,
+            }
+          : {
+              account_id: payload.account_id,
+              category_id: payload.category_id || null,
+              transaction_type: payload.transaction_type,
+              amount: payload.amount,
+              currency: payload.currency,
+              transaction_date: toIso(payload.transaction_date),
+              description: payload.description || null,
+              status: payload.status,
+            };
+      return transactionsApi.update(transaction.id, {
+        ...base,
+        expected_updated_at: freshestUpdatedAt(queryClient, transaction) ,
+      });
+    },
     onSuccess: async () => {
       setModalOpen(false);
       setEditing(null);
       setMessage("记录已更新");
       await refresh();
+    },
+    onError: async () => {
+      // A failed write (e.g. 409 conflict) still leaves our cached row stale;
+      // refetch so the next save uses a fresh optimistic-lock token.
+      await queryClient.invalidateQueries({ queryKey: ["transactions"] });
     },
   });
 
@@ -168,6 +209,11 @@ export function TransactionsPage() {
   const formCategories = (categories.data ?? []).filter(
     (category) => category.category_type === form.transaction_type && category.is_active,
   );
+  const editingConfirmed = editing?.status === "confirmed";
+  const canEditMetadata = (transaction: Transaction): boolean =>
+    transaction.status === "confirmed" &&
+    transaction.transaction_type !== "opening_balance" &&
+    !transaction.transfer_id;
 
   return (
     <div>
@@ -196,7 +242,7 @@ export function TransactionsPage() {
       ) : null}
       {mutationError ? (
         <div className="mb-4">
-          <ErrorBanner message={errorMessage(mutationError)} />
+          <ErrorBanner message={describeError(mutationError)} />
         </div>
       ) : null}
 
@@ -387,11 +433,11 @@ export function TransactionsPage() {
                       </td>
                       <td className="whitespace-nowrap px-5 py-3 text-right">
                         <div className="flex justify-end gap-1">
-                          {transaction.status === "draft" ? (
+                          {transaction.status === "draft" || canEditMetadata(transaction) ? (
                             <Button
                               variant="ghost"
                               className="h-8 px-2"
-                              title="编辑"
+                              title={transaction.status === "draft" ? "编辑" : "修改分类 / 描述"}
                               onClick={() => openEdit(transaction)}
                             >
                               <Pencil className="h-3.5 w-3.5" />
@@ -465,17 +511,29 @@ export function TransactionsPage() {
 
       <Modal
         open={modalOpen}
-        title={editing ? "编辑收支记录" : "新增收支记录"}
+        title={
+          editingConfirmed
+            ? "修改分类 / 描述"
+            : editing
+              ? "编辑收支记录"
+              : "新增收支记录"
+        }
         onClose={() => {
           setModalOpen(false);
           setEditing(null);
         }}
       >
         <div className="space-y-4">
+          {editingConfirmed ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-800">
+              已确认记录仅可修改分类与描述；金额、账户、日期等财务字段的修正请使用「冲销」后重新录入。
+            </div>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="账户">
               <Select
                 value={form.account_id}
+                disabled={editingConfirmed}
                 onChange={(event) => {
                   const account = accounts.data?.find((item) => item.id === event.target.value);
                   setForm((value) => ({
@@ -495,6 +553,7 @@ export function TransactionsPage() {
             <Field label="类型">
               <Select
                 value={form.transaction_type}
+                disabled={editingConfirmed}
                 onChange={(event) =>
                   setForm((value) => ({
                     ...value,
@@ -513,12 +572,14 @@ export function TransactionsPage() {
                 min="0"
                 step="0.01"
                 value={form.amount}
+                disabled={editingConfirmed}
                 onChange={(event) => setForm((value) => ({ ...value, amount: event.target.value }))}
               />
             </Field>
             <Field label="币种">
               <Select
                 value={form.currency}
+                disabled={editingConfirmed}
                 onChange={(event) => setForm((value) => ({ ...value, currency: event.target.value }))}
               >
                 {currencies.data?.map((currency) => (
@@ -547,6 +608,7 @@ export function TransactionsPage() {
               <Input
                 type="date"
                 value={form.transaction_date}
+                disabled={editingConfirmed}
                 onChange={(event) =>
                   setForm((value) => ({ ...value, transaction_date: event.target.value }))
                 }
@@ -565,6 +627,7 @@ export function TransactionsPage() {
           <Field label="状态" hint="草稿不计入已确认统计口径，可在之后确认。">
             <Select
               value={form.status}
+              disabled={editingConfirmed}
               onChange={(event) =>
                 setForm((value) => ({
                   ...value,
@@ -578,7 +641,7 @@ export function TransactionsPage() {
           </Field>
 
           {create.isError || update.isError ? (
-            <ErrorBanner message={errorMessage(create.error ?? update.error)} />
+            <ErrorBanner message={describeError(create.error ?? update.error)} />
           ) : null}
 
           <div className="flex justify-end gap-2">
@@ -594,7 +657,7 @@ export function TransactionsPage() {
             <Button
               disabled={!form.account_id || !form.amount || create.isPending || update.isPending}
               onClick={() => {
-                if (editing) update.mutate({ id: editing.id, payload: form });
+                if (editing) update.mutate({ transaction: editing, payload: form });
                 else create.mutate(form);
               }}
             >

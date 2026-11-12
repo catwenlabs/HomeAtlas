@@ -561,10 +561,342 @@ async def test_update_draft_then_immutable(
     immutable = await db_client.put(
         f"/api/v1/transactions/{transaction['id']}",
         headers=household_headers,
-        json={"description": "不允许"},
+        json={"amount": "99"},
     )
     assert immutable.status_code == 409
-    assert immutable.json()["error_code"] == "TRANSACTION_NOT_EDITABLE"
+    assert immutable.json()["error_code"] == "TRANSACTION_FIELD_IMMUTABLE"
+
+
+async def _confirmed_expense(
+    db_client: AsyncClient, household_headers: dict[str, str], **payload: object
+) -> dict:
+    account = await _create_account(db_client, household_headers)
+    await _set_opening(db_client, household_headers, account["id"], "1000")
+    transaction = await _create_transaction(
+        db_client,
+        household_headers,
+        account_id=account["id"],
+        transaction_type="expense",
+        amount="10",
+        description="原始描述",
+        status="confirmed",
+        **payload,
+    )
+    return transaction
+
+
+async def test_confirmed_metadata_edit(
+    db_client: AsyncClient, db_app, household_headers: dict[str, str]
+):
+    dining = await _find_category(db_client, household_headers, "餐饮")
+    transaction = await _confirmed_expense(db_client, household_headers)
+
+    response = await db_client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=household_headers,
+        json={"category_id": dining["id"], "description": "更正后的描述"},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["category_id"] == dining["id"]
+    assert data["description"] == "更正后的描述"
+    assert Decimal(data["amount"]) == Decimal("10.00")
+    assert data["status"] == "confirmed"
+
+    async with db_app.state.db_session_factory() as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(AuditLog).where(
+                        AuditLog.entity_type == "transaction",
+                        AuditLog.entity_id == UUID(transaction["id"]),
+                        AuditLog.action == "transaction.update_metadata",
+                    )
+                )
+            ).all()
+        )
+    assert len(rows) == 1
+    audit = rows[0]
+    assert audit.before_data is not None
+    assert audit.after_data is not None
+    assert audit.before_data["description"] == "原始描述"
+    assert audit.after_data["description"] == "更正后的描述"
+    assert audit.after_data["category_id"] == dining["id"]
+
+    # No-op edit (same values) must not write an audit record.
+    no_op = await db_client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=household_headers,
+        json={"category_id": dining["id"], "description": "更正后的描述"},
+    )
+    assert no_op.status_code == 200
+    async with db_app.state.db_session_factory() as session:
+        count = len(
+            list(
+                (
+                    await session.scalars(
+                        select(AuditLog).where(
+                            AuditLog.entity_type == "transaction",
+                            AuditLog.entity_id == UUID(transaction["id"]),
+                            AuditLog.action == "transaction.update_metadata",
+                        )
+                    )
+                ).all()
+            )
+        )
+    assert count == 1
+
+
+async def test_confirmed_metadata_edit_allows_clearing_fields(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    dining = await _find_category(db_client, household_headers, "餐饮")
+    transaction = await _confirmed_expense(db_client, household_headers, category_id=dining["id"])
+
+    response = await db_client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=household_headers,
+        json={"category_id": None, "description": None},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["category_id"] is None
+    assert data["description"] is None
+
+
+async def test_confirmed_metadata_edit_rejects_financial_fields(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    account = await _create_account(db_client, household_headers)
+    other = await _create_account(db_client, household_headers, name="转入账户")
+    transaction = await _confirmed_expense(db_client, household_headers)
+
+    attempts = [
+        {"amount": "20"},
+        {"status": "draft"},
+        {"transaction_type": "income"},
+        {"currency": "USD"},
+        {"exchange_rate": "2"},
+        {"exchange_rate_date": "2026-05-01"},
+        {"transaction_date": "2026-05-01T00:00:00+08:00"},
+        {"account_id": other["id"]},
+        {"external_id": "ext-1"},
+    ]
+    for payload in attempts:
+        response = await db_client.put(
+            f"/api/v1/transactions/{transaction['id']}",
+            headers=household_headers,
+            json=payload,
+        )
+        assert response.status_code == 409, payload
+        assert response.json()["error_code"] == "TRANSACTION_FIELD_IMMUTABLE", payload
+
+    # Financial fields must be rejected even when sent alongside metadata.
+    combined = await db_client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=household_headers,
+        json={"description": "混合请求", "amount": "20"},
+    )
+    assert combined.status_code == 409
+    assert combined.json()["error_code"] == "TRANSACTION_FIELD_IMMUTABLE"
+
+    # Category type must still match the transaction type.
+    salary = await _find_category(db_client, household_headers, "工资")
+    mismatch = await db_client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=household_headers,
+        json={"category_id": salary["id"]},
+    )
+    assert mismatch.status_code == 400
+    assert mismatch.json()["error_code"] == "CATEGORY_TYPE_MISMATCH"
+
+    # The account was only created to be referenced; opening not needed.
+    assert account["id"]
+
+
+async def test_reversed_transaction_rejects_metadata_edit(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    transaction = await _confirmed_expense(db_client, household_headers)
+    await db_client.post(
+        f"/api/v1/transactions/{transaction['id']}/reverse", headers=household_headers
+    )
+
+    response = await db_client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=household_headers,
+        json={"description": "冲销后"},
+    )
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "TRANSACTION_NOT_EDITABLE"
+
+
+async def test_confirmed_metadata_edit_rejects_transfer_linked(
+    db_client: AsyncClient, db_app, household: dict, household_headers: dict[str, str]
+):
+    account = await _create_account(db_client, household_headers)
+    other = await _create_account(db_client, household_headers, name="转入账户")
+
+    async with db_app.state.db_session_factory() as session:
+        transfer = Transfer(
+            household_id=UUID(household["id"]),
+            from_account_id=UUID(account["id"]),
+            to_account_id=UUID(other["id"]),
+            from_amount=Decimal("10"),
+            from_currency="CNY",
+            to_amount=Decimal("10"),
+            to_currency="CNY",
+            exchange_rate=Decimal("1"),
+            fee=Decimal("1"),
+            fee_currency="CNY",
+            transfer_date=datetime(2026, 1, 1, tzinfo=UTC),
+            status="confirmed",
+        )
+        session.add(transfer)
+        await session.flush()
+        fee_transaction = Transaction(
+            household_id=UUID(household["id"]),
+            account_id=UUID(account["id"]),
+            transaction_type="expense",
+            amount=Decimal("1"),
+            currency="CNY",
+            base_amount=Decimal("1"),
+            base_currency="CNY",
+            exchange_rate=Decimal("1"),
+            exchange_rate_date=date(2026, 1, 1),
+            transaction_date=datetime(2026, 1, 1, tzinfo=UTC),
+            source="system",
+            status="confirmed",
+            transfer_id=transfer.id,
+        )
+        session.add(fee_transaction)
+        await session.commit()
+        fee_id = fee_transaction.id
+
+    response = await db_client.put(
+        f"/api/v1/transactions/{fee_id}",
+        headers=household_headers,
+        json={"description": "改手续费"},
+    )
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "TRANSACTION_LINKED_TO_TRANSFER"
+
+
+async def test_update_with_expected_updated_at(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    dining = await _find_category(db_client, household_headers, "餐饮")
+    transaction = await _confirmed_expense(db_client, household_headers)
+
+    stale = await db_client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=household_headers,
+        json={
+            "description": "过期版本",
+            "expected_updated_at": "2020-01-01T00:00:00Z",
+        },
+    )
+    assert stale.status_code == 409
+    assert stale.json()["error_code"] == "TRANSACTION_CONFLICT"
+
+    current = await db_client.get(
+        f"/api/v1/transactions/{transaction['id']}", headers=household_headers
+    )
+    fresh_updated_at = current.json()["data"]["updated_at"]
+
+    ok = await db_client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=household_headers,
+        json={
+            "category_id": dining["id"],
+            "description": "并发安全更新",
+            "expected_updated_at": fresh_updated_at,
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["data"]["description"] == "并发安全更新"
+
+    # The edit bumped updated_at: replaying with the old token now conflicts.
+    replay = await db_client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=household_headers,
+        json={
+            "description": "重放",
+            "expected_updated_at": fresh_updated_at,
+        },
+    )
+    assert replay.status_code == 409
+    assert replay.json()["error_code"] == "TRANSACTION_CONFLICT"
+
+
+async def test_concurrent_edits_with_same_token_one_wins(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    """Two writers holding the same token race: the row lock must let exactly
+    one commit; the loser reloads under lock and gets TRANSACTION_CONFLICT."""
+    import asyncio
+
+    transaction = await _confirmed_expense(db_client, household_headers)
+    current = await db_client.get(
+        f"/api/v1/transactions/{transaction['id']}", headers=household_headers
+    )
+    token = current.json()["data"]["updated_at"]
+
+    first, second = await asyncio.gather(
+        db_client.put(
+            f"/api/v1/transactions/{transaction['id']}",
+            headers=household_headers,
+            json={"description": "成员A", "expected_updated_at": token},
+        ),
+        db_client.put(
+            f"/api/v1/transactions/{transaction['id']}",
+            headers=household_headers,
+            json={"description": "成员B", "expected_updated_at": token},
+        ),
+    )
+    outcomes = sorted([first.status_code, second.status_code])
+    assert outcomes == [200, 409], (first.text, second.text)
+    loser = second if second.status_code == 409 else first
+    assert loser.json()["error_code"] == "TRANSACTION_CONFLICT"
+
+    final = await db_client.get(
+        f"/api/v1/transactions/{transaction['id']}", headers=household_headers
+    )
+    winner_description = final.json()["data"]["description"]
+    assert winner_description in {"成员A", "成员B"}
+    assert final.json()["data"]["description"] == winner_description
+
+
+async def test_reversed_row_reports_immutable_even_with_stale_token(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    transaction = await _confirmed_expense(db_client, household_headers)
+    await db_client.post(
+        f"/api/v1/transactions/{transaction['id']}/reverse", headers=household_headers
+    )
+
+    response = await db_client.put(
+        f"/api/v1/transactions/{transaction['id']}",
+        headers=household_headers,
+        json={"description": "过期令牌", "expected_updated_at": "2020-01-01T00:00:00Z"},
+    )
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "TRANSACTION_NOT_EDITABLE"
+
+
+async def test_confirmed_metadata_edit_rejects_opening_balance(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    account = await _create_account(db_client, household_headers)
+    opening = await _set_opening(db_client, household_headers, account["id"], "100")
+
+    response = await db_client.put(
+        f"/api/v1/transactions/{opening['id']}",
+        headers=household_headers,
+        json={"description": "改期初描述"},
+    )
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "TRANSACTION_NOT_EDITABLE"
 
 
 async def test_delete_only_draft(db_client: AsyncClient, household_headers: dict[str, str]):

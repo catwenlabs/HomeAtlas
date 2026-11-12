@@ -99,13 +99,18 @@ TanStack Query 管理服务端状态，Zustand 持久化 token 与用户信息�
 - `POST /transactions` 仅接受 `income` / `expense`，默认 `draft`；可传 `status=confirmed` 直接确认。
 - `draft → confirmed`：通过 `PUT /transactions/{id}`（`status=confirmed`）；`confirmed → reversed`：
   通过 `POST /transactions/{id}/reverse`。其余迁移被拒绝。
-- 仅 draft 可修改（PUT）与物理删除（DELETE）；confirmed 只能冲正；reversed 为终态。
+- 仅 draft 可全字段修改（PUT）与物理删除（DELETE）；confirmed 可修正元数据
+  （`category_id` / `description`，409 `TRANSACTION_FIELD_IMMUTABLE` 拒绝财务字段；
+  转账派生流水禁止，409 `TRANSACTION_LINKED_TO_TRANSFER`），财务字段只能冲正；
+  reversed 为终态。
+- `PUT` 支持可选 `expected_updated_at` 乐观锁：与记录 `updated_at` 不符时
+  返回 409 `TRANSACTION_CONFLICT`，防止家庭成员并发互相覆盖。
 - 冲正在同一事务中把原记录置 `reversed`，并生成金额相同、方向翻转、
   `source=system`、`reverses_transaction_id` 指向原记录的 confirmed 反向流水。
 - 普通金额恒正；`opening_balance` 只能通过账户初始余额端点写入。
 - Phase 1 负余额规则：确认 expense 或冲正收入时校验账户该币种账面余额，
   不足返回 409 `INSUFFICIENT_BALANCE`。
-- 审计动作：`transaction.create/update/confirm/delete/reverse`。
+- 审计动作：`transaction.create/update/update_metadata/confirm/delete/reverse`。
 
 ### 转账（Phase 2E）
 
