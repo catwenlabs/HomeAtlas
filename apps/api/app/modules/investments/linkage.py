@@ -68,8 +68,15 @@ async def apply_reversal_linkage(
                 status_code=409,
                 error_code="TRANSFER_LINKED_TO_INVESTMENT",
             )
-        before: dict[str, Any] = {"principal": str(investment.principal)}
+        before: dict[str, Any] = {
+            "principal": str(investment.principal),
+            "current_value": str(investment.current_value),
+        }
         investment.principal = decremented
+        # The funding seeded current_value from the principal (5.2 / §15):
+        # the cost basis leaves with the cash, user-asserted markup stays,
+        # floored at zero to respect the column constraint.
+        investment.current_value = max(investment.current_value - original.to_amount, Decimal("0"))
         write_audit(
             session,
             household_id=household.id,
@@ -77,7 +84,10 @@ async def apply_reversal_linkage(
             entity_type="investment",
             entity_id=investment.id,
             before=before,
-            after={"principal": str(investment.principal)},
+            after={
+                "principal": str(investment.principal),
+                "current_value": str(investment.current_value),
+            },
         )
         return
 

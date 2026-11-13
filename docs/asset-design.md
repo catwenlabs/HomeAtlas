@@ -193,7 +193,8 @@ tags：`id, household_id, name VARCHAR(50), color CHAR(7) NULL`，
 
 - **冲正入金转账**（direction=fund 且未冲正）：等额调减
   `investment.principal`；调减后 `< 0` 则拒绝冲正（409
-  `TRANSFER_LINKED_TO_INVESTMENT`，提示先处理投资）。
+  `TRANSFER_LINKED_TO_INVESTMENT`，提示先处理投资）。同时等额调减
+  `current_value`（下限 0，对称 §15 入金自动估值；用户标注浮盈留存）。
 - **冲正赎回转账**（direction=redeem）：回滚 `status → active`、清零
   `realized_pnl`、恢复 `current_value`（redeem 时留存的 pre-redeem 快照值，
   存于投资行 `remark` 之外的结构化列 `pre_redeem_value Numeric NULL`）；
@@ -259,7 +260,9 @@ tags：`id, household_id, name VARCHAR(50), color CHAR(7) NULL`，
    1. 先在**投资账户**落衍生 pnl 流水：`realized_pnl = to_amount − principal`，
       `> 0` 生成衍生收入（分类「投资收益」）、`< 0` 生成衍生支出（「投资亏损」），
       `source='system'`、`transfer_id` 关联（复用手续费模式）——此时投资账户
-      余额 = principal + pnl = to_amount，后续转账余额校验自然通过；
+      余额 = principal + pnl = to_amount，后续转账余额校验自然通过；亏损衍生
+      行同受 §5.1 余额守卫（账户余额与本金漂移时先拒绝，409
+      `INSUFFICIENT_BALANCE`）；
    2. 再生成投资账户 → 现金账户的 `confirmed` 转账（回笼 `to_amount`），写
       `investment_transfers (direction='redeem')`；
    3. 置 `status='redeemed'`、落 `realized_pnl`、`current_value=0`、留存
@@ -409,6 +412,7 @@ daily_interest_expense = Σ active 贷款 remaining_principal×annual_rate/365
 | TAG_DUPLICATE | 409 | 同家庭标签重名（实施新增） |
 | INVESTMENT_HAS_TRANSFERS | 409 | 删除时存在未冲正关联转账 |
 | INVESTMENT_ACCOUNT_INVALID | 422 | account_id 非投资账户/跨家庭/币种不符 |
+| INVESTMENT_PRINCIPAL_CONFLICT | 422 | 建仓同时传 principal>0 与 fund_transfer（实施新增，防本金双计） |
 | REDEEM_AMOUNT_INVALID | 422 | to_amount ≤ 0 或币种不符 |
 | TAG_IN_USE / TAG_NOT_FOUND | 409/404 | |
 | LOAN_REMAINING_INVALID | 422 | PUT 时 remaining_principal > principal（实施新增） |
@@ -508,3 +512,6 @@ spec §10 的 2C 范围经本设计实质调整（证券交易/股息/持仓明�
 4. 冲正联动补充定案：投资已 redeemed 时冲正入金转账同样返回
    `TRANSFER_LINKED_TO_INVESTMENT`（先冲正赎回）；`reverse_transfer`
    的衍生流水冲正泛化为全部 confirmed 衍生行（覆盖赎回盈利的收入冲正）。
+5. 入金便利与对称回滚：入金时若 `current_value=0` 则以本金自动初始化
+   （省一次 PUT /value）；冲正入金对称等额调减 `current_value`（下限 0），
+   用户标注的浮盈留存，避免 principal=0 而 current_value 高挂虚增净资产。

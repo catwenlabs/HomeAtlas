@@ -26,6 +26,7 @@ from app.core.enums import (
 )
 from app.core.exceptions import AppError
 from app.core.money import quantize_amount, quantize_money
+from app.modules.accounts.guards import ensure_withdrawable
 from app.modules.accounts.service import get_account
 from app.modules.audit.service import write_audit
 from app.modules.categories.defaults import INVESTMENT_INCOME_NAME, INVESTMENT_LOSS_NAME
@@ -207,7 +208,10 @@ async def execute_redeem(
     investment: Investment,
     payload: InvestmentRedeem,
 ) -> dict[str, Any]:
-    """Full redemption with the fixed C1 ordering (design section 5.2)."""
+    """Full redemption with the fixed C1 ordering (design section 5.2).
+
+    Caller owns the transaction boundary (no commit here).
+    """
     ensure_active(investment)
     investment_account_id = ensure_managed(investment)
     investment_currency = await get_currency(session, str(investment.currency).strip())
@@ -264,6 +268,18 @@ async def execute_redeem(
     pnl_transaction: Transaction | None = None
     if pnl != Decimal("0"):
         profit = pnl > Decimal("0")
+        if not profit:
+            # The derived loss row is a withdrawal like any other: it must
+            # pass the shared 5.1 guard before anything is written. Without
+            # this, a drifted investment-account balance would go negative
+            # mid-flow and only surface as a confusing transfer error.
+            investment_account = await get_account(session, household.id, investment_account_id)
+            await ensure_withdrawable(
+                session,
+                account=investment_account,
+                currency=investment_currency.code,
+                decrease=abs(pnl),
+            )
         category = await _investment_category(session, household.id, profit=profit)
         pnl_transaction = Transaction(
             household_id=household.id,
@@ -353,8 +369,6 @@ async def execute_redeem(
             "pre_redeem_value": str(investment.pre_redeem_value),
         },
     )
-    await session.commit()
-    await session.refresh(investment)
     return {
         "investment": investment,
         "transfer_id": transfer.id,

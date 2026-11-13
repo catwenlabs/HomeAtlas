@@ -205,7 +205,7 @@ TanStack Query 管理服务端状态，Zustand 持久化 token 与用户信息�
 
 - 业务端点统一前缀 `/api/v1`。
 - 成功：`{"success": true, "data": ..., "message": null}`；列表的 `data` 为 `{items, total, page, page_size}`。
-- 失败：`{"success": false, "data": null, "message": "...", "error_code": "..."}`，由全局异常处理器产出：
+- 失败：`{"success": false, "data": <错误细节对象或 null>, "message": "...", "error_code": "..."}`（`data` 携带结构化细节，如汇率缺口清单；无细节时为 `null`），由全局异常处理器产出：
   - `AppError` 及子类 → 业务错误码（4xx）
   - `RequestValidationError` → `VALIDATION_ERROR`（422）
   - Starlette `HTTPException` → 按状态码映射（404→`NOT_FOUND` 等）

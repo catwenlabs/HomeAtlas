@@ -28,6 +28,8 @@ from app.modules.investments.models import (
 )
 from app.modules.investments.schemas import (
     InvestmentCreate,
+    InvestmentFund,
+    InvestmentRedeem,
     InvestmentUpdate,
     InvestmentValueUpdate,
 )
@@ -131,6 +133,14 @@ async def create_investment(
     if payload.account_id is not None:
         account = await _resolve_investment_account(
             session, household.id, payload.account_id, payload.currency
+        )
+
+    if payload.fund_transfer is not None and payload.principal > Decimal("0"):
+        raise AppError(
+            "principal must be 0 when fund_transfer is given: the transfer "
+            "amount becomes the principal (asset-design 5.2)",
+            status_code=422,
+            error_code="INVESTMENT_PRINCIPAL_CONFLICT",
         )
 
     investment = Investment(
@@ -274,6 +284,34 @@ async def set_tags(
     await session.commit()
     await session.refresh(investment)
     return investment
+
+
+async def fund_investment(
+    session: AsyncSession,
+    household: Household,
+    investment_id: UUID,
+    payload: InvestmentFund,
+) -> Investment:
+    """Append funding: one transaction covers the transfer and the mutation."""
+    investment = await get_investment(session, household.id, investment_id)
+    await flows.execute_fund(session, household, investment, payload.fund_transfer)
+    await session.commit()
+    await session.refresh(investment)
+    return investment
+
+
+async def redeem_investment(
+    session: AsyncSession,
+    household: Household,
+    investment_id: UUID,
+    payload: InvestmentRedeem,
+) -> dict[str, Any]:
+    """Full redemption; the transaction boundary lives here, not in the flow."""
+    investment = await get_investment(session, household.id, investment_id)
+    result = await flows.execute_redeem(session, household, investment, payload)
+    await session.commit()
+    await session.refresh(investment)
+    return result
 
 
 async def delete_investment(

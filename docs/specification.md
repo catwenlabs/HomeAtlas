@@ -545,14 +545,14 @@ Current Balance =
 }
 ```
 
-错误响应：
+错误响应（`data` 为结构化错误细节对象，如汇率缺口清单；无细节时为 `null`）：
 
 ```json
 {
   "success": false,
-  "data": null,
-  "message": "Invalid transaction",
-  "error_code": "TRANSACTION_INVALID"
+  "data": {"missing": ["USD/CNY"]},
+  "message": "Missing exchange rate for USD/CNY",
+  "error_code": "EXCHANGE_RATE_NOT_FOUND"
 }
 ```
 

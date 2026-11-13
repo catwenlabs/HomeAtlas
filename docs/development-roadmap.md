@@ -389,7 +389,9 @@
     `fund_transfer` 同事务入金：复用 `_resolve_terms` + 新拆的
     `_persist_transfer`（无 commit 内核），守卫失败整笔回滚（不留投资行、
     不留孤儿转账）；`principal += to_amount`，`current_value` 随第一笔入金
-    初始化。跨币种入金要求显式 `exchange_rate`；两侧均非本位币时从
+    初始化（冲正对称回滚，见下）。建仓传 `principal>0` 与 `fund_transfer`
+    并存时 422 `INVESTMENT_PRINCIPAL_CONFLICT`（防本金双计）。跨币种入金
+    要求显式 `exchange_rate`；两侧均非本位币时从
     `finance.exchange_rates` 取 base 汇率（缺则 400 带缺口）。
   - **追加入金** `POST /investments/{id}/fund`、**估值唯一入口**
     `PUT /value`（浮盈不计收支）、**PUT 收窄**（managed 的 principal /
@@ -398,7 +400,9 @@
     `INVESTMENT_HAS_TRANSFERS`，链接行显式清理）。
   - **赎回闭环**（C1 固定顺序）：① 衍生 pnl 流水先落投资账户（盈利→
     「投资收益」收入 / 亏损→「投资亏损」支出，金额 |pnl|，transfer_id
-    待转账落库后回填——此刻账户余额恰等于 to_amount）；② 资金转账回
+    待转账落库后回填——此刻账户余额恰等于 to_amount；亏损衍生行先过
+    §5.1 公共余额守卫，账户余额与本金漂移时 409 `INSUFFICIENT_BALANCE`
+    先拒绝）；② 资金转账回
     现金账户（守卫自然通过）；③ 置 redeemed + `realized_pnl` +
     `current_value=0` + 留存 `pre_redeem_value`。赎回要求 managed +
     to_account 同币种（422 `REDEEM_AMOUNT_INVALID`）；base 汇率可请求
@@ -407,7 +411,8 @@
   - **到期**：`matured` 为查询期派生态（`end_date <= 今日(household tz)
     AND status='active'`），不落库；`GET /investments?status=` 三态筛选。
   - **冲正联动**（linkage.py，在 `reverse_transfer` 同事务最前方执行）：
-    冲正入金转账等额调减 principal（<0 或投资已 redeemed → 409
+    冲正入金转账等额调减 principal 与 current_value（current_value 下限
+    0，用户标注浮盈留存；principal<0 或投资已 redeemed → 409
     `TRANSFER_LINKED_TO_INVESTMENT`，提示先冲正赎回）；冲正赎回转账回滚
     status/realized_pnl/current_value（`pre_redeem_value` 快照），衍生
     pnl 流水随行冲正。`reverse_transfer` 衍生冲正查询泛化为全部

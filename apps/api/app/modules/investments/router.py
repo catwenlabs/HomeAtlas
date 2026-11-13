@@ -12,7 +12,7 @@ from app.core.money import quantize_money
 from app.core.pagination import PaginationDep, page_payload
 from app.core.responses import success_response
 from app.modules.households.dependencies import CurrentHousehold
-from app.modules.investments import flows, holdings, service, tags
+from app.modules.investments import holdings, service, tags
 from app.modules.investments.models import Investment
 from app.modules.investments.schemas import (
     HoldingCreate,
@@ -223,10 +223,7 @@ async def fund_investment(
     investment_id: uuid.UUID,
     payload: InvestmentFund,
 ) -> dict[str, Any]:
-    investment = await service.get_investment(session, household.id, investment_id)
-    await flows.execute_fund(session, household, investment, payload.fund_transfer)
-    await session.commit()
-    await session.refresh(investment)
+    investment = await service.fund_investment(session, household, investment_id, payload)
     today = service.household_today(household)
     return success_response(_investment(investment, today=today))
 
@@ -238,8 +235,7 @@ async def redeem_investment(
     investment_id: uuid.UUID,
     payload: InvestmentRedeem,
 ) -> dict[str, Any]:
-    investment = await service.get_investment(session, household.id, investment_id)
-    result = await flows.execute_redeem(session, household, investment, payload)
+    result = await service.redeem_investment(session, household, investment_id, payload)
     today = service.household_today(household)
     data = _investment(result["investment"], today=today)
     data["redeem_transfer_id"] = str(result["transfer_id"])

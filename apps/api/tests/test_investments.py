@@ -443,6 +443,112 @@ async def test_full_reversal_chain_restores_state(
     assert fund_undo.status_code == 201, fund_undo.text
     detail = await db_client.get(f"/api/v1/investments/{created['id']}", headers=household_headers)
     assert detail.json()["data"]["principal"] == "0E-8"
+    # The cost basis leaves with the funding; the marked-up residual stays.
+    assert detail.json()["data"]["current_value"] == "800.00000000"
+
+
+async def test_create_rejects_principal_with_fund_transfer(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    """principal + fund_transfer would double-count the cost basis (5.2)."""
+    cash = await _create_account(db_client, household_headers, name="储蓄")
+    await _set_opening(db_client, household_headers, cash["id"], "100000")
+    brokerage = await _create_account(
+        db_client, household_headers, name="券商", account_type="investment"
+    )
+    rejected = await db_client.post(
+        "/api/v1/investments",
+        headers=household_headers,
+        json={
+            "name": "双重本金",
+            "investment_type": "fixed",
+            "start_date": TODAY.isoformat(),
+            "account_id": brokerage["id"],
+            "principal": "5000",
+            "fund_transfer": {"from_account_id": cash["id"], "from_amount": "10000"},
+        },
+    )
+    assert rejected.status_code == 422, rejected.text
+    assert rejected.json()["error_code"] == "INVESTMENT_PRINCIPAL_CONFLICT"
+    # No side effects: the funding transfer must not have been created.
+    assert await _transfers(db_client, household_headers) == []
+
+
+async def test_fund_reversal_takes_seeded_value_along(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    created, cash, brokerage = await _funded_investment(db_client, household_headers)
+    fund = next(
+        t
+        for t in await _transfers(db_client, household_headers)
+        if t["description"].startswith("Investment fund")
+    )
+    undone = await db_client.post(
+        f"/api/v1/transfers/{fund['id']}/reverse", headers=household_headers
+    )
+    assert undone.status_code == 201, undone.text
+    detail = await db_client.get(f"/api/v1/investments/{created['id']}", headers=household_headers)
+    data = detail.json()["data"]
+    assert data["principal"] == "0E-8"
+    assert data["current_value"] == "0E-8"
+    assert await _book_balance(db_client, household_headers, brokerage["id"]) == Decimal("0")
+    assert await _book_balance(db_client, household_headers, cash["id"]) == Decimal("100000")
+
+
+async def test_fund_reversal_keeps_marked_up_residual_value(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    created, _, _ = await _funded_investment(db_client, household_headers)
+    await db_client.put(
+        f"/api/v1/investments/{created['id']}/value",
+        headers=household_headers,
+        json={"current_value": "12000"},
+    )
+    fund = next(
+        t
+        for t in await _transfers(db_client, household_headers)
+        if t["description"].startswith("Investment fund")
+    )
+    undone = await db_client.post(
+        f"/api/v1/transfers/{fund['id']}/reverse", headers=household_headers
+    )
+    assert undone.status_code == 201, undone.text
+    detail = await db_client.get(f"/api/v1/investments/{created['id']}", headers=household_headers)
+    data = detail.json()["data"]
+    assert data["principal"] == "0E-8"
+    # User-asserted markup (12000 - 10000) survives the cost basis leaving.
+    assert data["current_value"] == "2000.00000000"
+
+
+async def test_loss_redeem_guarded_when_cash_drifted_below_principal(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    created, cash, brokerage = await _funded_investment(db_client, household_headers)
+    drained = await db_client.post(
+        "/api/v1/transfers",
+        headers=household_headers,
+        json={
+            "from_account_id": brokerage["id"],
+            "to_account_id": cash["id"],
+            "from_amount": "5000",
+            "to_amount": "5000",
+            "status": "confirmed",
+        },
+    )
+    assert drained.status_code == 201, drained.text
+
+    redeemed = await db_client.post(
+        f"/api/v1/investments/{created['id']}/redeem",
+        headers=household_headers,
+        json={"to_account_id": cash["id"], "to_amount": "4500"},
+    )
+    assert redeemed.status_code == 409, redeemed.text
+    assert redeemed.json()["error_code"] == "INSUFFICIENT_BALANCE"
+    # The guard fires on the derived loss row itself: it names the loss
+    # 5500 (= principal 10000 - proceeds 4500), not the transfer proceeds.
+    assert "5500" in redeemed.json()["message"]
+    # Nothing persisted: the drifted balance is untouched.
+    assert await _book_balance(db_client, household_headers, brokerage["id"]) == Decimal("5000")
 
 
 async def test_matured_derived_status(db_client: AsyncClient, household_headers: dict[str, str]):
