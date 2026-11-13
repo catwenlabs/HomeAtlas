@@ -848,3 +848,97 @@ async def test_openapi_documents_transfer_paths(
         "/api/v1/transfers/{transfer_id}/reverse",
     }
     assert expected <= set(payload["paths"])
+
+
+async def test_credit_source_overdraft_allowed(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    credit = await _create_account(
+        db_client, household_headers, name="信用卡", account_type="credit"
+    )
+    target = await _create_account(db_client, household_headers, name="储蓄卡")
+    await _set_opening(db_client, household_headers, credit["id"], "-500")
+
+    overdraft = await _create_transfer(
+        db_client,
+        household_headers,
+        from_account_id=credit["id"],
+        to_account_id=target["id"],
+        from_amount="200",
+        to_amount="200",
+        status="confirmed",
+    )
+    assert overdraft["status"] == "confirmed"
+
+    balances = await _balances(db_client, household_headers, credit["id"])
+    assert balances["CNY"] == Decimal("-700")
+
+
+async def test_credit_source_limit_exceeded(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    credit = await _create_account(
+        db_client,
+        household_headers,
+        name="限额信用卡",
+        account_type="credit",
+        credit_limit=1000,
+    )
+    target = await _create_account(db_client, household_headers, name="储蓄卡")
+    await _set_opening(db_client, household_headers, credit["id"], "-500")
+
+    rejected = await db_client.post(
+        "/api/v1/transfers",
+        headers=household_headers,
+        json={
+            "from_account_id": credit["id"],
+            "to_account_id": target["id"],
+            "from_amount": "600",
+            "to_amount": "600",
+            "status": "confirmed",
+        },
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["error_code"] == "CREDIT_LIMIT_EXCEEDED"
+
+    draft = await _create_transfer(
+        db_client,
+        household_headers,
+        from_account_id=credit["id"],
+        to_account_id=target["id"],
+        from_amount="600",
+        to_amount="600",
+    )
+    confirm = await db_client.put(
+        f"/api/v1/transfers/{draft['id']}",
+        headers=household_headers,
+        json={"status": "confirmed"},
+    )
+    assert confirm.status_code == 409
+    assert confirm.json()["error_code"] == "CREDIT_LIMIT_EXCEEDED"
+
+
+async def test_reverse_into_credit_negative_allowed(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    credit = await _create_account(
+        db_client, household_headers, name="信用卡", account_type="credit"
+    )
+    source = await _create_account(db_client, household_headers, name="储蓄卡")
+    await _set_opening(db_client, household_headers, source["id"], "300")
+
+    transfer = await _create_transfer(
+        db_client,
+        household_headers,
+        from_account_id=source["id"],
+        to_account_id=credit["id"],
+        from_amount="300",
+        to_amount="300",
+        status="confirmed",
+    )
+    reversed_response = await db_client.post(
+        f"/api/v1/transfers/{transfer['id']}/reverse", headers=household_headers
+    )
+    assert reversed_response.status_code == 201, reversed_response.text
+    balances = await _balances(db_client, household_headers, credit["id"])
+    assert balances["CNY"] == Decimal("0")

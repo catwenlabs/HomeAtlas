@@ -8,6 +8,8 @@ def success_response(data: Any = None, message: str | None = None) -> dict[str, 
     return {"success": True, "data": data, "message": message}
 
 
-def error_response(message: str, error_code: str) -> dict[str, Any]:
-    """Build the error envelope (success=false, data=null, message, error_code)."""
-    return {"success": False, "data": None, "message": message, "error_code": error_code}
+def error_response(
+    message: str, error_code: str, details: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Build the error envelope (success=false, data=details, message, error_code)."""
+    return {"success": False, "data": details, "message": message, "error_code": error_code}

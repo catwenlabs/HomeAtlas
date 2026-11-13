@@ -7,9 +7,11 @@ unauthenticated setup/login endpoints.
 from fastapi import APIRouter
 
 from app.modules.accounts.router import router as accounts_router
+from app.modules.assets.router import router as assets_router
 from app.modules.auth.router import router as auth_router
 from app.modules.categories.router import router as categories_router
 from app.modules.currencies.router import router as currencies_router
+from app.modules.exchange_rates.router import router as exchange_rates_router
 from app.modules.households.router import router as households_router
 from app.modules.imports.router import router as imports_router
 from app.modules.setup.router import router as setup_router
@@ -31,4 +33,6 @@ api_router.include_router(transactions_router)
 api_router.include_router(transfers_router)
 api_router.include_router(imports_router)
 api_router.include_router(statistics_router)
+api_router.include_router(exchange_rates_router)
+api_router.include_router(assets_router)
 api_router.include_router(users_router)

@@ -81,6 +81,9 @@ async def create_account(
         currency=payload.currency,
         external_ref=payload.external_ref,
         is_active=payload.is_active,
+        annual_rate=payload.annual_rate,
+        liquidity=payload.liquidity.value if payload.liquidity else None,
+        credit_limit=payload.credit_limit,
     )
     session.add(account)
     await session.commit()
@@ -100,7 +103,10 @@ async def update_account(
         await get_currency(session, changes["currency"])
         account.currency = changes["currency"]
     if changes.get("account_type") is not None:
-        account.account_type = changes["account_type"].value
+        new_type = changes["account_type"]
+        if new_type != account.account_type:
+            await _ensure_account_type_changeable(session, account)
+        account.account_type = new_type.value
     if changes.get("name") is not None:
         account.name = changes["name"]
     if changes.get("is_active") is not None:
@@ -109,9 +115,46 @@ async def update_account(
         account.institution = changes["institution"]
     if "external_ref" in changes:
         account.external_ref = changes["external_ref"]
+    if "annual_rate" in changes:
+        account.annual_rate = changes["annual_rate"]
+    if "liquidity" in changes:
+        account.liquidity = changes["liquidity"].value if changes["liquidity"] else None
+    if "credit_limit" in changes:
+        account.credit_limit = changes["credit_limit"]
     await session.commit()
     await session.refresh(account)
     return account
+
+
+async def _ensure_account_type_changeable(session: AsyncSession, account: Account) -> None:
+    """Lock account_type once the account carries any history (H8)."""
+    transaction_count = (
+        await session.scalar(
+            select(func.count())
+            .select_from(Transaction)
+            .where(Transaction.account_id == account.id)
+        )
+        or 0
+    )
+    transfer_count = (
+        await session.scalar(
+            select(func.count())
+            .select_from(Transfer)
+            .where(
+                or_(
+                    Transfer.from_account_id == account.id,
+                    Transfer.to_account_id == account.id,
+                )
+            )
+        )
+        or 0
+    )
+    if transaction_count or transfer_count:
+        raise AppError(
+            "Account type cannot change after transactions or transfers exist",
+            status_code=409,
+            error_code="ACCOUNT_TYPE_IMMUTABLE",
+        )
 
 
 async def delete_account(session: AsyncSession, household_id: UUID, account_id: UUID) -> None:

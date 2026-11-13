@@ -408,3 +408,108 @@ async def test_account_list_sort_validation(
 ):
     bad = await db_client.get("/api/v1/accounts?sort_by=password", headers=household_headers)
     assert bad.status_code == 400
+
+
+async def test_credit_account_fields_roundtrip(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    account = await _create_account(
+        db_client,
+        household_headers,
+        name="招商信用卡",
+        account_type="credit",
+        credit_limit=15000,
+        annual_rate=0.18,
+        liquidity="T1",
+    )
+    assert account["account_type"] == "credit"
+    assert account["credit_limit"] == "15000.00000000"
+    assert account["annual_rate"] == "0.18000000"
+    assert account["liquidity"] == "T1"
+
+    updated = await db_client.put(
+        f"/api/v1/accounts/{account['id']}",
+        headers=household_headers,
+        json={"credit_limit": 20000, "liquidity": None},
+    )
+    assert updated.status_code == 200, updated.text
+    data = updated.json()["data"]
+    assert data["credit_limit"] == "20000.00000000"
+    assert data["liquidity"] is None
+
+
+async def test_investment_account_type_accepted(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    account = await _create_account(
+        db_client, household_headers, name="证券账户", account_type="investment"
+    )
+    assert account["account_type"] == "investment"
+    assert account["credit_limit"] is None
+
+
+async def test_new_account_fields_validation(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    negative_rate = await db_client.post(
+        "/api/v1/accounts",
+        headers=household_headers,
+        json={"name": "坏利率", "account_type": "bank", "annual_rate": -0.01},
+    )
+    assert negative_rate.status_code == 422
+
+    negative_limit = await db_client.post(
+        "/api/v1/accounts",
+        headers=household_headers,
+        json={"name": "坏额度", "account_type": "credit", "credit_limit": -1},
+    )
+    assert negative_limit.status_code == 422
+
+    bad_liquidity = await db_client.post(
+        "/api/v1/accounts",
+        headers=household_headers,
+        json={"name": "坏流动性", "account_type": "bank", "liquidity": "T9"},
+    )
+    assert bad_liquidity.status_code == 422
+
+
+async def test_account_type_locked_after_transactions(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    account = await _create_account(db_client, household_headers, name="锁定账户")
+    opening = await db_client.put(
+        f"/api/v1/accounts/{account['id']}/opening-balance",
+        headers=household_headers,
+        json={"amount": 100},
+    )
+    assert opening.status_code == 200, opening.text
+
+    locked = await db_client.put(
+        f"/api/v1/accounts/{account['id']}",
+        headers=household_headers,
+        json={"account_type": "credit"},
+    )
+    assert locked.status_code == 409
+    assert locked.json()["error_code"] == "ACCOUNT_TYPE_IMMUTABLE"
+
+    # Metadata fields stay editable on an account with history.
+    metadata_ok = await db_client.put(
+        f"/api/v1/accounts/{account['id']}",
+        headers=household_headers,
+        json={"annual_rate": 0.03, "liquidity": "T0", "credit_limit": 5000},
+    )
+    assert metadata_ok.status_code == 200, metadata_ok.text
+    assert metadata_ok.json()["data"]["annual_rate"] == "0.03000000"
+
+
+async def test_account_type_changeable_without_history(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    account = await _create_account(db_client, household_headers, name="空账户")
+    response = await db_client.put(
+        f"/api/v1/accounts/{account['id']}",
+        headers=household_headers,
+        json={"account_type": "credit", "credit_limit": 10000},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["account_type"] == "credit"

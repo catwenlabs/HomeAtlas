@@ -1166,3 +1166,104 @@ async def test_openapi_documents_transaction_paths(
         "/api/v1/transactions/{transaction_id}/reverse",
     }
     assert expected <= set(payload["paths"])
+
+
+async def test_credit_account_overdraft_allowed(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    credit = await _create_account(
+        db_client, household_headers, name="信用卡", account_type="credit"
+    )
+    await _set_opening(db_client, household_headers, credit["id"], "-500")
+    dining = await _find_category(db_client, household_headers, "餐饮")
+
+    overdraft = await db_client.post(
+        "/api/v1/transactions",
+        headers=household_headers,
+        json={
+            "account_id": credit["id"],
+            "category_id": dining["id"],
+            "transaction_type": "expense",
+            "amount": "300",
+            "status": "confirmed",
+        },
+    )
+    assert overdraft.status_code == 201, overdraft.text
+
+    balances = await db_client.get(
+        f"/api/v1/accounts/{credit['id']}/balances", headers=household_headers
+    )
+    assert _book_balance(balances.json()) == Decimal("-800")
+
+    # Reversing a confirmed income drives the balance further negative and
+    # must stay allowed on a credit account with no credit_limit.
+    income = await _create_transaction(
+        db_client,
+        household_headers,
+        account_id=credit["id"],
+        transaction_type="income",
+        amount="100",
+        status="confirmed",
+    )
+    reversed_response = await db_client.post(
+        f"/api/v1/transactions/{income['id']}/reverse", headers=household_headers
+    )
+    assert reversed_response.status_code == 201, reversed_response.text
+
+
+async def test_credit_limit_exceeded_rejected(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    credit = await _create_account(
+        db_client,
+        household_headers,
+        name="限额信用卡",
+        account_type="credit",
+        credit_limit=1000,
+    )
+    await _set_opening(db_client, household_headers, credit["id"], "-500")
+    dining = await _find_category(db_client, household_headers, "餐饮")
+
+    rejected = await db_client.post(
+        "/api/v1/transactions",
+        headers=household_headers,
+        json={
+            "account_id": credit["id"],
+            "category_id": dining["id"],
+            "transaction_type": "expense",
+            "amount": "600",
+            "status": "confirmed",
+        },
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["error_code"] == "CREDIT_LIMIT_EXCEEDED"
+
+    draft = await _create_transaction(
+        db_client,
+        household_headers,
+        account_id=credit["id"],
+        category_id=dining["id"],
+        transaction_type="expense",
+        amount="600",
+    )
+    confirm = await db_client.put(
+        f"/api/v1/transactions/{draft['id']}",
+        headers=household_headers,
+        json={"status": "confirmed"},
+    )
+    assert confirm.status_code == 409
+    assert confirm.json()["error_code"] == "CREDIT_LIMIT_EXCEEDED"
+
+    # Spending exactly up to the limit is allowed (abs(-1000) == limit).
+    exact = await db_client.post(
+        "/api/v1/transactions",
+        headers=household_headers,
+        json={
+            "account_id": credit["id"],
+            "category_id": dining["id"],
+            "transaction_type": "expense",
+            "amount": "500",
+            "status": "confirmed",
+        },
+    )
+    assert exact.status_code == 201, exact.text

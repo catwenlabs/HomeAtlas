@@ -123,6 +123,7 @@ async def clean_db(db_app: FastAPI, db_client: AsyncClient) -> AsyncIterator[Non
             text(
                 "TRUNCATE TABLE system.import_rows, system.import_batches, "
                 "system.audit_logs, core.users, core.account_balances, "
+                "finance.net_worth_snapshots, finance.exchange_rates, "
                 "finance.transactions, finance.transfers, finance.categories, "
                 "core.accounts, core.households RESTART IDENTITY CASCADE"
             )

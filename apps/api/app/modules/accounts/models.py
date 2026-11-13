@@ -25,8 +25,20 @@ class Account(Base):
     __tablename__ = "accounts"
     __table_args__ = (
         CheckConstraint(
-            "account_type IN ('bank', 'cash', 'wallet', 'other')",
+            "account_type IN ('bank', 'cash', 'wallet', 'other', 'credit', 'investment')",
             name="account_type_valid",
+        ),
+        CheckConstraint(
+            "annual_rate IS NULL OR annual_rate >= 0",
+            name="annual_rate_non_negative",
+        ),
+        CheckConstraint(
+            "liquidity IS NULL OR liquidity IN ('none', 'T0', 'T1', 'T2', 'T3')",
+            name="liquidity_valid",
+        ),
+        CheckConstraint(
+            "credit_limit IS NULL OR credit_limit >= 0",
+            name="credit_limit_non_negative",
         ),
         Index("ix_accounts_household_active", "household_id", "is_active"),
         {"schema": "core"},
@@ -44,6 +56,9 @@ class Account(Base):
     )
     external_ref: Mapped[str | None] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True, server_default="true")
+    annual_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    liquidity: Mapped[str | None] = mapped_column(String(10))
+    credit_limit: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

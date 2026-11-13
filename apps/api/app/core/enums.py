@@ -8,6 +8,24 @@ class AccountType(StrEnum):
     CASH = "cash"
     WALLET = "wallet"
     OTHER = "other"
+    CREDIT = "credit"
+    INVESTMENT = "investment"
+
+
+class Liquidity(StrEnum):
+    """Withdrawal speed for accounts and investments (asset-design 4.2)."""
+
+    NONE = "none"
+    T0 = "T0"
+    T1 = "T1"
+    T2 = "T2"
+    T3 = "T3"
+
+
+class ExchangeRateSource(StrEnum):
+    MANUAL = "manual"
+    IMPORT = "import"
+    SYSTEM = "system"
 
 
 class CategoryType(StrEnum):

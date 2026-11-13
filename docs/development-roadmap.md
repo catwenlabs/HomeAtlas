@@ -11,7 +11,10 @@
 | 1.5 | 数据导入预留：接口、模型、去重与异步流程设计评审 | ✅ 设计评审完成（实现移至 2B） |
 | 2A | JWT 认证、首次部署初始化向导、React Web 前端 | ✅ 完成（Task 009） |
 | 2B-2 | 异步导入：NATS JetStream + Outbox + Worker | ⏸ 暂缓 |
-| 2C/2D | 投资与资产 / Grafana | ⬜ 第一阶段稳定后 |
+| 2C-1 | 汇率表、credit/透支账户、净资产快照与总览 | ✅ 完成（Task 010） |
+| 2C-2/2C-4 | 投资与标签 / Web 资产负债页 | ⬜ 待实施 |
+| 2C-3 | 贷款与负债端 | ⬜ 待实施 |
+| 2D | Grafana | ⬜ 2C 之后 |
 | 2B-1 | 数据导入同步骨架：CSV 上传、映射、预览/去重、确认生成交易 | ✅ 完成（Task 007） |
 | 2B-3 | 数据导入增强：Excel、模板下载、模糊去重、批量行修正 | ✅ 完成（Task 008） |
 | 2E（原 Phase 1.3） | 转账与多币种：跨币种、手续费衍生支出、余额核对 | ✅ 完成（Task 006） |
@@ -296,3 +299,75 @@
   `import-design.md` 已记录。
 - 触发条件：数据量或文件规模增长、需要后台进度查询或跨实例部署时，再按
   `docs/import-design.md` §12 的 2B-2 方案实施。
+
+## Task 010（Phase 2C-1）已完成（2026-11-13）
+
+- 迁移 `20261113_0005_phase_2c_1`：`finance.exchange_rates`（§4.1 全列、
+  `UNIQUE(household, base, quote, rate_date)`、`rate > 0`、`base <> quote`）、
+  `core.accounts` 扩展（`account_type` CHECK 增 `credit`/`investment`；可空列
+  `annual_rate Numeric(12,8)`、`liquidity`、`credit_limit Numeric(24,8)` 均带
+  CHECK）、`finance.net_worth_snapshots`（§4.7 全列，含 JSONB
+  `currency_breakdown` / `fx_rates_used`，`UNIQUE(household_id, snapshot_date)`）。
+  升级/降级往返验证通过。
+- 汇率模块 `app/modules/exchange_rates/`（`/api/v1`，Bearer）：
+  - `GET /exchange-rates`（分页，币对/日期区间筛选）、`POST /exchange-rates`、
+    `GET /exchange-rates/latest?base=&quote=[&date=]`（响应带
+    `direction: direct|inverse` 与 `source_pair`）、`DELETE /exchange-rates/{id}`。
+  - 取数规则（§4.1）：`rate_date <= 查询日` 最新直连 → 反向 `1/rate`（12 位
+    half-even）→ 缺失抛 `EXCHANGE_RATE_NOT_FOUND`；不做三角套算。
+  - 校验：`rate <= 0` / `base = quote` → 422 `EXCHANGE_RATE_VALUE_INVALID`
+    （与 transactions 既有 400 `EXCHANGE_RATE_INVALID` 不撞）；同家庭+币对+日期
+    重复 → 409 `EXCHANGE_RATE_DUPLICATE`；币种不存在 → 404 `CURRENCY_NOT_FOUND`。
+  - 审计：`exchange_rate.create/delete`。
+- credit 账户与负余额（§5.1）：
+  - 公共守卫 `app/modules/accounts/guards.py`：`withdrawal_violation`（纯函数，
+    返回错误码）+ `ensure_withdrawable`（抛出版）。非 credit 账户透支 →
+    `INSUFFICIENT_BALANCE`；credit 账户放行，`credit_limit` 非空且
+    `abs(新余额) > credit_limit` → `CREDIT_LIMIT_EXCEEDED`（409）；
+    `credit_limit IS NULL` 不校验；透支恰好等于额度放行。
+  - 替换全部 7 个校验点：transactions 创建/确认/冲正收入
+    （`transactions/service.py`）、transfers 创建/确认/冲正
+    （`transfers/service.py`，`_ensure_balance` 改为委托守卫）、imports 确认
+    （`imports/service.py` 用非抛出版落行级错误）。两个旧私有 helper 删除，
+    守卫单一来源。
+- 账户扩展（§4.2/§6.3）：`POST/PUT /accounts` 接受可选
+  `annual_rate` / `liquidity` / `credit_limit`（Pydantic ge=0 与枚举校验），
+  响应同步带出；**已有任何流水或转账的账户禁改 `account_type`**（409
+  `ACCOUNT_TYPE_IMMUTABLE`，H8 收窄；新错误码已回写 asset-design §8）；
+  三个新字段随时可改。credit 负数开账沿用 opening_balance 豁免恒正。
+- 总览与快照（§5.2/§5.3/§5.4/§6.5）`app/modules/assets/`：
+  - `GET /assets/summary` 实时计算：复用 `get_household_book_balances`，
+    非投资账户正余额 = 现金、负余额 = 负债，investment 账户余额全额计入
+    「理财中」；净资产 = 现金 + 投资账户余额 − 负债（2C-2/2C-3 项：浮盈、
+    unmanaged、贷款固定为 0，字段占位）。分桶（闲置/理财中/已到期）、
+    `unmapped_cash`（2C-1 = 投资账户余额，尚无投资登记）、`inactive_count`、
+    分币种明细含 `fx_rate`；缺任一币对 → 400 `EXCHANGE_RATE_NOT_FOUND`，
+    `data.missing` 带缺口清单（AppError 新增 `details` 通道，透传至错误
+    envelope 的 `data`，向后兼容）。单币种家庭恒等折算、不查表。
+  - 日利息：非投资账户按其**默认币种**余额（决策：多币种账户只对默认币种
+    计息）`max(balance,0) × annual_rate / 365`，折算本位币；credit 负余额
+    不计负利息；贷款端 2C-3 接入。
+  - `POST /assets/snapshots`：无 body，日期 = 家庭时区今日；按
+    `UNIQUE(household_id, snapshot_date)` upsert（201 新建 / 200 更新），
+    固化 `fx_rates_used` 与 `currency_breakdown`；缺汇率整体失败且不落行，
+    审计 `net_worth.snapshot.create` / `.update` 分支单列。
+  - `GET /assets/snapshots`（分页 + 日期区间，默认按日期升序）、
+    `GET /assets/snapshots/monthly?year=`：月度聚合（首末快照净资产差、
+    日利息合计、快照天数），只含有快照的月份，单快照月 `net_change = 0`。
+- 既有 statistics 端点零改动：分币种明细本就含负值，合计语义不变；
+  总额折算的正式出口是 `/assets/summary` 与快照（§5.3 口径）。
+- 测试：新增 `tests/test_exchange_rates.py`（7 项）、`tests/test_assets.py`
+  （8 项）、credit 语义扩展 test_accounts/test_transactions/test_transfers/
+  test_imports；conftest TRUNCATE 清单补 `finance.exchange_rates` /
+  `finance.net_worth_snapshots`。全量 **143 项通过，覆盖率 97.15%**；
+  ruff / ruff format / mypy strict 通过。
+
+### Phase 2C-1 已知边界
+
+- 快照只记当日（家庭时区），不支持历史补录；`SNAPSHOT_DATE_INVALID`
+  留在错误码表但无触发路径。
+- `unmapped_cash` 在 2C-1 恒等于投资账户余额（无投资登记可对账），
+  2C-2 引入 investments 后改为「投资账户余额 − Σ managed principal」。
+- 日利息是估算口径，不产生流水；贷款利息（支出端）随 2C-3。
+- 汇率为家庭视角手工录入，无行情源与自动更新；反向取数不做精度
+  二次校验（1/rate 已按 12 位 half-even 取整）。

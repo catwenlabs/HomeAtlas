@@ -1321,3 +1321,38 @@ async def test_bulk_row_update_and_skip(
     )
     assert completed_edit.status_code == 409
     assert completed_edit.json()["error_code"] == "IMPORT_STATE_INVALID"
+
+
+async def test_credit_account_import_overdraft_and_limit(
+    db_client: AsyncClient, household_headers: dict[str, str]
+) -> None:
+    credit = await _create_account(
+        db_client,
+        household_headers,
+        name="信用卡",
+        account_type="credit",
+        credit_limit=1000,
+    )
+    await _set_opening(db_client, household_headers, credit["id"], "-500")
+    csv_text = "日期,金额,备注\n2026-06-01,-300,within-limit\n2026-06-02,-600,over-limit\n"
+    columns = {"transaction_date": "日期", "amount": "金额", "description": "备注"}
+
+    uploaded = await _upload(db_client, household_headers, csv_text, account_id=credit["id"])
+    assert uploaded.status_code == 201, uploaded.text
+    batch_id = uploaded.json()["data"]["id"]
+    assert (await _mapping(db_client, household_headers, batch_id, columns)).status_code == 200
+    assert (await _preview(db_client, household_headers, batch_id)).status_code == 200
+
+    confirmed = await _confirm(db_client, household_headers, batch_id)
+    assert confirmed.status_code == 200, confirmed.text
+    result = confirmed.json()["data"]
+    assert result["status"] == "partial"
+    assert result["imported_rows"] == 1
+
+    rows = await db_client.get(f"/api/v1/imports/{batch_id}/rows", headers=household_headers)
+    items = rows.json()["data"]["items"]
+    by_note = {item["raw_data"][2]: item for item in items}
+    assert by_note["within-limit"]["status"] == "imported"
+    assert by_note["over-limit"]["errors"][0]["code"] == "CREDIT_LIMIT_EXCEEDED"
+
+    assert (await _book_balance(db_client, household_headers, credit["id"])) == Decimal("-800")

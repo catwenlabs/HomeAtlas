@@ -14,8 +14,9 @@ from app.core.enums import CategoryType, TransactionSource, TransactionStatus, T
 from app.core.exceptions import AppError, NotFoundError
 from app.core.money import quantize_amount, quantize_money
 from app.core.pagination import Pagination, resolve_sort
+from app.modules.accounts.guards import ensure_withdrawable
 from app.modules.accounts.models import Account
-from app.modules.accounts.service import get_account, get_account_currency_balance
+from app.modules.accounts.service import get_account
 from app.modules.audit.service import write_audit
 from app.modules.categories.defaults import FINANCIAL_FEE_NAME
 from app.modules.categories.models import Category
@@ -130,17 +131,11 @@ async def _active_account(session: AsyncSession, household_id: UUID, account_id:
 async def _ensure_balance(
     session: AsyncSession,
     *,
-    account_id: UUID,
+    account: Account,
     currency: str,
     decrease: Decimal,
 ) -> None:
-    balance = await get_account_currency_balance(session, account_id, currency)
-    if balance - decrease < 0:
-        raise AppError(
-            f"Insufficient {currency} balance: available {balance}, required {decrease}",
-            status_code=409,
-            error_code="INSUFFICIENT_BALANCE",
-        )
+    await ensure_withdrawable(session, account=account, currency=currency, decrease=decrease)
 
 
 async def _ensure_transfer_funds(session: AsyncSession, terms: TransferTerms) -> None:
@@ -148,21 +143,21 @@ async def _ensure_transfer_funds(session: AsyncSession, terms: TransferTerms) ->
     if terms.fee > 0 and terms.fee_currency == terms.from_currency:
         await _ensure_balance(
             session,
-            account_id=terms.from_account.id,
+            account=terms.from_account,
             currency=terms.from_currency,
             decrease=terms.from_amount + terms.fee,
         )
         return
     await _ensure_balance(
         session,
-        account_id=terms.from_account.id,
+        account=terms.from_account,
         currency=terms.from_currency,
         decrease=terms.from_amount,
     )
     if terms.fee > 0:
         await _ensure_balance(
             session,
-            account_id=terms.from_account.id,
+            account=terms.from_account,
             currency=terms.fee_currency,
             decrease=terms.fee,
         )
@@ -623,9 +618,10 @@ async def reverse_transfer(
     else:
         exchange_rate = quantize_amount(to_amount / from_amount, EXCHANGE_RATE_PLACES)
 
+    to_account = await get_account(session, household.id, original.to_account_id)
     await _ensure_balance(
         session,
-        account_id=original.to_account_id,
+        account=to_account,
         currency=from_currency,
         decrease=from_amount,
     )

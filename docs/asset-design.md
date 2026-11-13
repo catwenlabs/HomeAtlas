@@ -399,6 +399,7 @@ daily_interest_expense = Σ active 贷款 remaining_principal×annual_rate/365
 | EXCHANGE_RATE_VALUE_INVALID | 422 | rate ≤ 0 / base=quote（**不占用** transactions 已有的 EXCHANGE_RATE_INVALID=400） |
 | EXCHANGE_RATE_DUPLICATE | 409 | 同 household+币对+日期重复录入 |
 | CREDIT_LIMIT_EXCEEDED | 409 | credit 透支超额度 |
+| ACCOUNT_TYPE_IMMUTABLE | 409 | 已有流水/转账的账户禁改 `account_type`（实施新增，承载 §6.3 H8 收窄） |
 | LOAN_NOT_FOUND / NOT_EDITABLE / NOT_DELETABLE / ALREADY_SETTLED | 404/409/409/409 | |
 | INVESTMENT_NOT_FOUND / NOT_EDITABLE / NOT_DELETABLE / ALREADY_REDEEMED | 404/409/409/409 | |
 | INVESTMENT_HAS_TRANSFERS | 409 | 删除时存在未冲正关联转账 |

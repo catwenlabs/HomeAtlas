@@ -13,11 +13,9 @@ from app.core.enums import TransactionSource, TransactionStatus, TransactionType
 from app.core.exceptions import AppError, NotFoundError
 from app.core.money import quantize_amount, quantize_money
 from app.core.pagination import Pagination, resolve_sort
+from app.modules.accounts.guards import ensure_withdrawable
 from app.modules.accounts.models import Account
-from app.modules.accounts.service import (
-    get_account,
-    get_account_currency_balance,
-)
+from app.modules.accounts.service import get_account
 from app.modules.audit.service import write_audit
 from app.modules.categories.models import Category
 from app.modules.currencies.service import get_currency
@@ -180,22 +178,6 @@ async def _resolve_amounts(
     return currency.code, rate, rounded_amount, base_currency.code, base_amount
 
 
-async def _ensure_sufficient_balance(
-    session: AsyncSession,
-    *,
-    account_id: UUID,
-    currency: str,
-    decrease: Decimal,
-) -> None:
-    balance = await get_account_currency_balance(session, account_id, currency)
-    if balance - decrease < 0:
-        raise AppError(
-            f"Insufficient {currency} balance: available {balance}, required {decrease}",
-            status_code=409,
-            error_code="INSUFFICIENT_BALANCE",
-        )
-
-
 async def set_opening_balance(
     session: AsyncSession,
     account: Account,
@@ -309,9 +291,7 @@ async def create_transaction(
         status is TransactionStatus.CONFIRMED
         and payload.transaction_type is TransactionType.EXPENSE
     ):
-        await _ensure_sufficient_balance(
-            session, account_id=account.id, currency=currency, decrease=amount
-        )
+        await ensure_withdrawable(session, account=account, currency=currency, decrease=amount)
 
     occurred_at = payload.transaction_date or datetime.now(UTC)
     transaction = Transaction(
@@ -487,9 +467,7 @@ async def update_transaction(
         final_status == TransactionStatus.CONFIRMED.value
         and transaction_type == TransactionType.EXPENSE.value
     ):
-        await _ensure_sufficient_balance(
-            session, account_id=account.id, currency=currency, decrease=amount
-        )
+        await ensure_withdrawable(session, account=account, currency=currency, decrease=amount)
 
     transaction.account_id = account.id
     transaction.category_id = category_id
@@ -585,9 +563,10 @@ async def reverse_transaction(
         else TransactionType.INCOME.value
     )
     if reversed_type == TransactionType.EXPENSE.value:
-        await _ensure_sufficient_balance(
+        account = await get_account(session, household.id, original.account_id)
+        await ensure_withdrawable(
             session,
-            account_id=original.account_id,
+            account=account,
             currency=str(original.currency).strip(),
             decrease=original.amount,
         )

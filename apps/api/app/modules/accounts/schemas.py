@@ -7,10 +7,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.core.enums import AccountType, BalanceSource
+from app.core.enums import AccountType, BalanceSource, Liquidity
 
 Name = Annotated[str, Field(min_length=1, max_length=100)]
 CurrencyCode = Annotated[str, Field(pattern=r"^[A-Za-z]{3}$")]
+AnnualRate = Annotated[Decimal, Field(ge=0)]
+CreditLimit = Annotated[Decimal, Field(ge=0)]
 
 
 class AccountCreate(BaseModel):
@@ -20,6 +22,9 @@ class AccountCreate(BaseModel):
     currency: CurrencyCode = "CNY"
     external_ref: Annotated[str | None, Field(max_length=255)] = None
     is_active: bool = True
+    annual_rate: AnnualRate | None = None
+    liquidity: Liquidity | None = None
+    credit_limit: CreditLimit | None = None
 
     @field_validator("currency")
     @classmethod
@@ -34,6 +39,9 @@ class AccountUpdate(BaseModel):
     currency: CurrencyCode | None = None
     external_ref: Annotated[str | None, Field(max_length=255)] = None
     is_active: bool | None = None
+    annual_rate: AnnualRate | None = None
+    liquidity: Liquidity | None = None
+    credit_limit: CreditLimit | None = None
 
     @field_validator("currency")
     @classmethod
@@ -52,6 +60,9 @@ class AccountRead(BaseModel):
     currency: str
     external_ref: str | None
     is_active: bool
+    annual_rate: Decimal | None
+    liquidity: str | None
+    credit_limit: Decimal | None
     created_at: datetime
     updated_at: datetime
 

@@ -23,6 +23,7 @@ from app.core.enums import TransactionSource, TransactionStatus, TransactionType
 from app.core.exceptions import AppError, NotFoundError
 from app.core.money import quantize_amount, quantize_money
 from app.core.pagination import Pagination, resolve_sort
+from app.modules.accounts.guards import withdrawal_violation
 from app.modules.accounts.models import Account
 from app.modules.accounts.service import get_account_currency_balance
 from app.modules.audit.service import write_audit
@@ -1255,12 +1256,17 @@ async def _execute_row(
             balance = await get_account_currency_balance(
                 session, account.id, str(normalized["currency"])
             )
-            amount = Decimal(str(normalized["amount"]))
-            if balance - amount < 0:
+            code = withdrawal_violation(
+                balance,
+                Decimal(str(normalized["amount"])),
+                account_type=str(account.account_type).strip(),
+                credit_limit=account.credit_limit,
+            )
+            if code is not None:
                 return "invalid", _error(
-                    "INSUFFICIENT_BALANCE",
+                    code,
                     "amount",
-                    f"Insufficient {normalized['currency']} balance",
+                    f"Withdrawal of {normalized['currency']} rejected on this account type",
                 )
         category_id = (
             UUID(str(normalized["category_id"])) if normalized.get("category_id") else None

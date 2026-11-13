@@ -43,6 +43,8 @@ Swagger UI：<http://127.0.0.1:8000/docs>（业务接口需要 Bearer token）�
 | Transfers | `GET/POST /api/v1/transfers`、`GET/PUT/DELETE /api/v1/transfers/{id}`、`POST /api/v1/transfers/{id}/reverse` |
 | Imports | `POST/GET /api/v1/imports`、`GET/DELETE /api/v1/imports/{id}`、`PUT /api/v1/imports/{id}/mapping`、`POST /api/v1/imports/{id}/preview`、`GET /api/v1/imports/{id}/rows`、`PUT /api/v1/imports/{id}/rows`（批量）、`POST /api/v1/imports/{id}/rows/skip`、`PUT /api/v1/imports/{id}/rows/{row_id}`、`POST /api/v1/imports/{id}/confirm`、`POST /api/v1/imports/{id}/cancel`、`GET /api/v1/imports/template?format=csv\|xlsx` |
 | Statistics | `GET /api/v1/statistics/income-expense`、`/category`、`/monthly`、`/cashflow`、`/overview`、`/account-balances` |
+| Exchange rates | `GET/POST /api/v1/exchange-rates`、`GET /api/v1/exchange-rates/latest?base=&quote=`、`DELETE /api/v1/exchange-rates/{id}` |
+| Assets | `GET /api/v1/assets/summary`、`POST /api/v1/assets/snapshots`（当日快照 upsert）、`GET /api/v1/assets/snapshots`、`GET /api/v1/assets/snapshots/monthly?year=` |
 | 探针 | `GET /health`、`GET /ready`（不走 envelope） |
 
 ### 首次初始化与登录

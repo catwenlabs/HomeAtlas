@@ -1,5 +1,7 @@
 """Application errors and global exception handlers (spec v1.3 section 6.8)."""
 
+from typing import Any
+
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -19,7 +21,11 @@ _ERROR_CODE_BY_STATUS = {
 
 
 class AppError(Exception):
-    """Base class for business errors carrying a stable error_code."""
+    """Base class for business errors carrying a stable error_code.
+
+    ``details`` optionally carries structured context (e.g. the list of
+    missing currency pairs) and is surfaced in the error envelope's data.
+    """
 
     status_code: int = status.HTTP_400_BAD_REQUEST
     error_code: str = "APP_ERROR"
@@ -30,12 +36,14 @@ class AppError(Exception):
         *,
         status_code: int | None = None,
         error_code: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         self.message = message
         if status_code is not None:
             self.status_code = status_code
         if error_code is not None:
             self.error_code = error_code
+        self.details = details
         super().__init__(message)
 
 
@@ -52,7 +60,7 @@ class ConflictError(AppError):
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
-        content=error_response(exc.message, exc.error_code),
+        content=error_response(exc.message, exc.error_code, details=exc.details),
     )
 
 
