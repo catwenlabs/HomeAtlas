@@ -13,7 +13,17 @@ import { useState } from "react";
 import { ApiError } from "../../api/client";
 import { investmentsApi, investmentTagsApi, marketApi } from "../../api/endpoints";
 import type { Investment } from "../../api/types";
-import { cn, formatDate, money } from "../../lib/utils";
+import {
+  amount,
+  cn,
+  decimalInput,
+  formatDate,
+  money,
+  pnlClass,
+  pnlPercent,
+  signedAmount,
+  signedPercent,
+} from "../../lib/utils";
 import { Badge, Card, EmptyState, ErrorBanner, Spinner } from "../ui";
 import { FundModal, InvestmentFormModal, RedeemModal } from "./InvestmentModals";
 
@@ -38,8 +48,7 @@ export function InvestmentsTab() {
 
   const list = useQuery({
     queryKey: ["investments", "tab", status],
-    queryFn: () =>
-      investmentsApi.list(status ? { status, page_size: 200 } : { page_size: 200 }),
+    queryFn: () => investmentsApi.list(status ? { status } : {}),
   });
   const tags = useQuery({
     queryKey: ["investment-tags"],
@@ -220,6 +229,12 @@ function InvestmentRow({
     investment.status === "active"
       ? Number(investment.current_value) - Number(investment.principal)
       : Number(investment.realized_pnl ?? 0);
+  const pnlRate = pnlPercent(
+    investment.status === "active"
+      ? investment.current_value
+      : Number(investment.principal) + pnl,
+    investment.principal,
+  );
 
   return (
     <Card className="p-0">
@@ -246,8 +261,8 @@ function InvestmentRow({
             )}
           </div>
           <p className="mt-1 text-xs text-slate-500">
-            {managed ? `托管 · 本金 ${investment.principal}` : `登记本金 ${investment.principal}`}{" "}
-            {investment.currency}
+            {managed ? "托管 · " : "登记 · "}
+            本金 {money(investment.principal, investment.currency)}
             {investment.end_date ? ` · 到期 ${formatDate(investment.end_date)}` : ""}
           </p>
         </div>
@@ -255,13 +270,9 @@ function InvestmentRow({
           <p className="font-semibold text-slate-900">
             {money(investment.current_value, investment.currency)}
           </p>
-          <p
-            className={cn(
-              "text-xs",
-              pnl > 0 ? "text-emerald-600" : pnl < 0 ? "text-red-600" : "text-slate-500",
-            )}
-          >
-            {investment.status === "active" ? "浮动" : "已实现"} {pnl.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          <p className={cn("mt-0.5 text-sm font-medium", pnlClass(pnl))}>
+            {investment.status === "active" ? "浮动盈亏" : "已实现"} {signedAmount(pnl)}
+            {pnlRate === null ? "" : ` (${signedPercent(pnlRate)})`}
           </p>
         </div>
       </button>
@@ -271,85 +282,115 @@ function InvestmentRow({
           {actionError ? <ErrorBanner message={actionError} /> : null}
 
           {investment.status === "active" ? (
-            <div className="flex flex-wrap items-end gap-2">
-              <label className="text-xs font-medium text-slate-600">
-                当前估值
-                <input
-                  className="mt-1 block w-36 rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                  inputMode="decimal"
-                  defaultValue={investment.current_value}
-                  onChange={(event) => setValueDraft(event.target.value)}
-                />
-              </label>
-              <button
-                type="button"
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-slate-300"
-                disabled={setValue.isPending || !valueDraft}
-                onClick={() => valueDraft && setValue.mutate(valueDraft)}
-              >
-                <Pencil className="mr-1 inline h-3.5 w-3.5" />
-                保存估值
-              </button>
-              {investment.investment_type === "stock" || investment.investment_type === "fund" ? (
+            <>
+              <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+                <span className="text-slate-500">
+                  本金{" "}
+                  <span className="font-medium text-slate-900">
+                    {money(investment.principal, investment.currency)}
+                  </span>
+                </span>
+                <span className="text-slate-500">
+                  当前市值{" "}
+                  <span className="font-medium text-slate-900">
+                    {money(investment.current_value, investment.currency)}
+                  </span>
+                </span>
+                <span className="text-slate-500">
+                  浮动盈亏{" "}
+                  <span className={cn("font-semibold", pnlClass(pnl))}>
+                    {signedAmount(pnl)}
+                  </span>{" "}
+                  <span className={cn("font-medium", pnlClass(pnl))}>
+                    {pnlRate === null ? "" : `(${signedPercent(pnlRate)})`}
+                  </span>
+                </span>
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="text-xs font-medium text-slate-600">
+                  当前估值
+                  <input
+                    className="mt-1 block w-36 rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                    inputMode="decimal"
+                    defaultValue={decimalInput(investment.current_value)}
+                    onChange={(event) => setValueDraft(event.target.value)}
+                  />
+                </label>
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-primary-200 bg-primary-50 px-3 py-2 text-sm font-medium text-primary-700 transition hover:bg-primary-100 disabled:opacity-50"
-                  disabled={refresh.isPending}
-                  onClick={() => {
-                    setActionError(null);
-                    refresh.mutate();
-                  }}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-slate-300"
+                  disabled={setValue.isPending || !valueDraft}
+                  onClick={() => valueDraft && setValue.mutate(valueDraft)}
                 >
-                  <RefreshCw className={cn("h-3.5 w-3.5", refresh.isPending && "animate-spin")} />
-                  {refresh.isPending ? "刷新中…" : "按行情刷新市值"}
+                  <Pencil className="mr-1 inline h-3.5 w-3.5" />
+                  保存估值
                 </button>
-              ) : null}
-              {managed ? (
-                <>
+                {investment.investment_type === "stock" || investment.investment_type === "fund" ? (
                   <button
                     type="button"
-                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-slate-300"
-                    onClick={() => setFundOpen(true)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-primary-200 bg-primary-50 px-3 py-2 text-sm font-medium text-primary-700 transition hover:bg-primary-100 disabled:opacity-50"
+                    disabled={refresh.isPending}
+                    onClick={() => {
+                      setActionError(null);
+                      refresh.mutate();
+                    }}
                   >
-                    <CircleDollarSign className="mr-1 inline h-3.5 w-3.5" />
-                    追加入金
+                    <RefreshCw className={cn("h-3.5 w-3.5", refresh.isPending && "animate-spin")} />
+                    {refresh.isPending ? "刷新中…" : "按行情刷新市值"}
                   </button>
-                  <button
-                    type="button"
-                    className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100"
-                    onClick={() => setRedeemOpen(true)}
-                  >
-                    <BadgeDollarSign className="mr-1 inline h-3.5 w-3.5" />
-                    全额赎回
-                  </button>
-                </>
-              ) : null}
-              <button
-                type="button"
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-slate-300"
-                onClick={onEdit}
-              >
-                编辑
-              </button>
-              <button
-                type="button"
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-red-600 transition hover:border-red-200"
-                onClick={onDelete}
-              >
-                <Trash2 className="mr-1 inline h-3.5 w-3.5" />
-                删除
-              </button>
-            </div>
+                ) : null}
+                {managed ? (
+                  <>
+                    <button
+                      type="button"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-slate-300"
+                      onClick={() => setFundOpen(true)}
+                    >
+                      <CircleDollarSign className="mr-1 inline h-3.5 w-3.5" />
+                      追加入金
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100"
+                      onClick={() => setRedeemOpen(true)}
+                    >
+                      <BadgeDollarSign className="mr-1 inline h-3.5 w-3.5" />
+                      全额赎回
+                    </button>
+                  </>
+                ) : null}
+                <button
+                  type="button"
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-slate-300"
+                  onClick={onEdit}
+                >
+                  编辑
+                </button>
+                <button
+                  type="button"
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-red-600 transition hover:border-red-200"
+                  onClick={onDelete}
+                >
+                  <Trash2 className="mr-1 inline h-3.5 w-3.5" />
+                  删除
+                </button>
+              </div>
+            </>
           ) : (
             <div className="flex flex-wrap items-center gap-2 text-sm text-slate-600">
               <span>
                 已实现损益{" "}
-                <strong className={pnl >= 0 ? "text-emerald-600" : "text-red-600"}>
-                  {pnl.toLocaleString("zh-CN", { minimumFractionDigits: 2 })} {investment.currency}
-                </strong>
+                <strong className={pnlClass(pnl)}>
+                  {signedAmount(pnl)} {investment.currency}
+                </strong>{" "}
+                {pnlRate === null ? null : (
+                  <span className={cn("font-medium", pnlClass(pnl))}>
+                    ({signedPercent(pnlRate)})
+                  </span>
+                )}
               </span>
               {investment.pre_redeem_value ? (
-                <span>· 赎回前估值 {investment.pre_redeem_value}</span>
+                <span>· 赎回前估值 {money(investment.pre_redeem_value, investment.currency)}</span>
               ) : null}
             </div>
           )}
@@ -357,13 +398,14 @@ function InvestmentRow({
           {refresh.isSuccess && refresh.data ? (
             <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm">
               <p className="font-medium text-emerald-800">
-                市值已更新：{refresh.data.previous_value} → {refresh.data.current_value}{" "}
-                {investment.currency}
+                市值已更新：{money(refresh.data.previous_value, investment.currency)} →{" "}
+                {money(refresh.data.current_value, investment.currency)}
               </p>
               <ul className="mt-1 space-y-0.5 text-xs text-emerald-700">
                 {refresh.data.items.map((item) => (
                   <li key={`${item.market}:${item.symbol}`}>
-                    {item.symbol}（{item.name}）× {item.quantity} @ {item.price} = {item.subtotal}
+                    {item.symbol}（{item.name}）× {Number(item.quantity).toLocaleString("zh-CN")}{" "}
+                    @ {amount(item.price)} = {money(item.subtotal, investment.currency)}
                   </li>
                 ))}
               </ul>
@@ -375,7 +417,7 @@ function InvestmentRow({
           ) : (holdings.data?.items.length ?? 0) > 0 ? (
             <div className="mt-4">
               <p className="text-sm font-semibold text-slate-900">
-                持股明细 · 持仓成本 {holdings.data?.holdings_cost} {investment.currency}
+                持股明细 · 持仓成本 {money(holdings.data?.holdings_cost, investment.currency)}
               </p>
               <div className="mt-2 overflow-x-auto">
                 <table className="w-full text-sm">
@@ -388,6 +430,7 @@ function InvestmentRow({
                       <th className="py-2 pr-4">现价</th>
                       <th className="py-2 pr-4">市值</th>
                       <th className="py-2 pr-4">浮动盈亏</th>
+                      <th className="py-2 pr-4">盈亏率</th>
                       <th className="py-2" />
                     </tr>
                   </thead>
@@ -398,16 +441,17 @@ function InvestmentRow({
                         ? Number(holding.quantity) * Number(quote.price)
                         : null;
                       const cost = Number(holding.quantity) * Number(holding.cost_price);
+                      const holdingPnl = marketValue === null ? null : marketValue - cost;
                       return (
                         <tr key={holding.id} className="border-b border-slate-50">
                           <td className="py-2 pr-4 text-slate-500">{holding.market}</td>
                           <td className="py-2 pr-4 font-mono text-slate-800">{holding.symbol}</td>
                           <td className="py-2 pr-4">{Number(holding.quantity).toLocaleString()}</td>
-                          <td className="py-2 pr-4">{Number(holding.cost_price).toLocaleString()}</td>
+                          <td className="py-2 pr-4">{amount(holding.cost_price)}</td>
                           <td className="py-2 pr-4">
                             {quote ? (
                               <span title={`更新于 ${new Date(quote.quoted_at).toLocaleTimeString("zh-CN")}`}>
-                                {Number(quote.price).toLocaleString()}
+                                {amount(quote.price)}
                               </span>
                             ) : (
                               <span className="text-slate-400">—</span>
@@ -417,25 +461,26 @@ function InvestmentRow({
                             {marketValue === null ? (
                               <span className="text-slate-400">—</span>
                             ) : (
-                              marketValue.toLocaleString("zh-CN", { maximumFractionDigits: 2 })
+                              amount(marketValue)
                             )}
                           </td>
                           <td
                             className={cn(
                               "py-2 pr-4",
-                              marketValue === null
-                                ? "text-slate-400"
-                                : marketValue - cost >= 0
-                                  ? "text-emerald-600"
-                                  : "text-red-600",
+                              holdingPnl === null ? "text-slate-400" : pnlClass(holdingPnl),
                             )}
                           >
-                            {marketValue === null
+                            {holdingPnl === null ? "—" : signedAmount(holdingPnl)}
+                          </td>
+                          <td
+                            className={cn(
+                              "py-2 pr-4",
+                              holdingPnl === null ? "text-slate-400" : pnlClass(holdingPnl),
+                            )}
+                          >
+                            {holdingPnl === null
                               ? "—"
-                              : (marketValue - cost).toLocaleString("zh-CN", {
-                                  minimumFractionDigits: 2,
-                                  maximumFractionDigits: 2,
-                                })}
+                              : signedPercent(pnlPercent(marketValue as number, cost))}
                           </td>
                           <td className="py-2 text-right">
                             <button

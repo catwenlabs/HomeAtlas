@@ -5,7 +5,7 @@ import { useState } from "react";
 import { ApiError } from "../../api/client";
 import { accountsApi, currenciesApi, loansApi, type LoanInput } from "../../api/endpoints";
 import type { Loan } from "../../api/types";
-import { formatDate, money, todayInput } from "../../lib/utils";
+import { decimalInput, formatDate, money, todayInput } from "../../lib/utils";
 import {
   Badge,
   Button,
@@ -29,7 +29,7 @@ export function LoansTab() {
 
   const list = useQuery({
     queryKey: ["loans", "tab", status],
-    queryFn: () => loansApi.list(status ? { status, page_size: 200 } : { page_size: 200 }),
+    queryFn: () => loansApi.list(status ? { status } : {}),
   });
   const items = list.data?.items ?? [];
 
@@ -105,7 +105,7 @@ export function LoansTab() {
                   {loan.repayment_type === "monthly_interest" ? <Badge>月付息</Badge> : <Badge>到期还本</Badge>}
                 </div>
                 <p className="mt-1 text-xs text-slate-500">
-                  放款 {Number(loan.principal).toLocaleString()} {loan.currency} · 年化{" "}
+                  放款 {money(loan.principal, loan.currency)} · 年化{" "}
                   {(Number(loan.annual_rate) * 100).toFixed(2)}% · 起始 {formatDate(loan.start_date)}
                   {loan.due_day ? ` · 每月 ${loan.due_day} 日还款` : ""}
                 </p>
@@ -116,7 +116,7 @@ export function LoansTab() {
                 </p>
                 <p className="text-xs text-slate-500">
                   {loan.status === "active"
-                    ? `日利息 ${Number(loan.daily_interest ?? 0).toFixed(2)}`
+                    ? `日利息 ${money(loan.daily_interest ?? 0, loan.currency)}`
                     : loan.settled_date
                       ? `结清于 ${formatDate(loan.settled_date)}`
                       : "已结清"}
@@ -237,14 +237,14 @@ function LoanFormModal({
             <Input name="institution" defaultValue={loan?.institution ?? ""} maxLength={100} />
           </Field>
           <Field label="放款本金">
-            <Input name="principal" required inputMode="decimal" defaultValue={loan?.principal ?? ""} />
+            <Input name="principal" required inputMode="decimal" defaultValue={loan ? decimalInput(loan.principal) : ""} />
           </Field>
           <Field label="剩余本金（登记存量贷款可小于放款额）">
             <Input
               name="remaining_principal"
               inputMode="decimal"
               placeholder="默认等于放款本金"
-              defaultValue={loan?.remaining_principal ?? ""}
+              defaultValue={loan ? decimalInput(loan.remaining_principal) : ""}
             />
           </Field>
           <Field label="币种">

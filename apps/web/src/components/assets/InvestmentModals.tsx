@@ -11,7 +11,7 @@ import {
   type InvestmentInput,
 } from "../../api/endpoints";
 import type { Investment } from "../../api/types";
-import { todayInput } from "../../lib/utils";
+import { decimalInput, money, todayInput } from "../../lib/utils";
 import { Button, ErrorBanner, Field, Input, Modal, Select } from "../ui";
 
 const TYPE_OPTIONS: { value: Investment["investment_type"]; label: string }[] = [
@@ -197,7 +197,7 @@ export function InvestmentFormModal({
               name="principal"
               inputMode="decimal"
               placeholder="0"
-              defaultValue={investment && !managed ? investment.principal : ""}
+              defaultValue={investment && !managed ? decimalInput(investment.principal) : ""}
               disabled={managed}
             />
           </Field>
@@ -425,7 +425,7 @@ export function RedeemModal({ investment, onClose }: RedeemModalProps) {
   return (
     <Modal open={investment !== null} onClose={onClose} title={`全额赎回 · ${investment?.name ?? ""}`}>
       <p className="text-sm text-slate-600">
-        本金 {investment?.principal} {investment?.currency}；回款账户需与投资同币种。
+        本金 {money(investment?.principal, investment?.currency)}；回款账户需与投资同币种。
         赎回金额低于本金即确认投资亏损，高于本金生成投资收益。
       </p>
       <form
@@ -458,7 +458,7 @@ export function RedeemModal({ investment, onClose }: RedeemModalProps) {
               name="to_amount"
               inputMode="decimal"
               required
-              defaultValue={investment?.principal ?? ""}
+              defaultValue={decimalInput(investment?.principal)}
             />
           </Field>
         </div>

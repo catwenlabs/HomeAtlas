@@ -322,7 +322,7 @@ export const importsApi = {
 export const assetsApi = {
   summary: () => get<AssetsSummary>("/assets/summary"),
   snapshots: (params?: { date_from?: string; date_to?: string }) =>
-    get<Page<NetWorthSnapshot>>("/assets/snapshots", { page_size: 400, ...params }),
+    get<Page<NetWorthSnapshot>>("/assets/snapshots", { page_size: 100, ...params }),
   createSnapshot: () => post<NetWorthSnapshot>("/assets/snapshots"),
 };
 

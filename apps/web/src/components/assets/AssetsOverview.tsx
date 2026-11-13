@@ -26,7 +26,7 @@ import { useState } from "react";
 
 import { ApiError } from "../../api/client";
 import { assetsApi, investmentsApi, loansApi } from "../../api/endpoints";
-import { money } from "../../lib/utils";
+import { money, pnlClass } from "../../lib/utils";
 import { Card, CardHeader, EmptyState, ErrorBanner, Spinner } from "../ui";
 import { StatCard } from "./StatCard";
 
@@ -68,7 +68,7 @@ export function AssetsOverview({ base }: { base: string }) {
   });
   const investments = useQuery({
     queryKey: ["investments", "overview-allocation"],
-    queryFn: () => investmentsApi.list({ page_size: 200 }),
+    queryFn: () => investmentsApi.list(),
   });
 
   const recordSnapshot = useMutation({
@@ -149,6 +149,7 @@ export function AssetsOverview({ base }: { base: string }) {
           label="理财中"
           value={money(data.buckets.invested, base)}
           hint={`浮盈 ${money(data.unrealized_pnl, base)}`}
+          hintTone={pnlClass(Number(data.unrealized_pnl))}
           icon={PiggyBank}
           tone="text-emerald-700 bg-emerald-50"
         />
