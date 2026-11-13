@@ -83,6 +83,9 @@ export interface Account {
   currency: string;
   external_ref: string | null;
   is_active: boolean;
+  annual_rate: string | null;
+  liquidity: string | null;
+  credit_limit: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -355,7 +358,7 @@ export interface Investment {
   household_id: string;
   name: string;
   investment_type: "fixed" | "daily" | "fund" | "cash" | "stock" | "bond" | "other";
-  account_id: string | null;
+  account_id: string;
   principal: string;
   current_value: string;
   currency: string;

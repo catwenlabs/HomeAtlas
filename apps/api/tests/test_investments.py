@@ -43,6 +43,24 @@ async def _investment(client: AsyncClient, headers: dict[str, str], **payload: o
         "start_date": TODAY.isoformat(),
     }
     body.update(payload)
+    if body.get("account_id") is None:
+        # Every investment now needs an investment account. Tests that do
+        # not care about the account get a disposable one; a positive
+        # principal is booked as an opening position.
+        account = await _create_account(
+            client,
+            headers,
+            name=f"投资账户-{body['currency']}",
+            account_type="investment",
+            currency=body["currency"],
+        )
+        body["account_id"] = account["id"]
+        if (
+            Decimal(str(body.get("principal", "0"))) > 0
+            and body.get("fund_transfer") is None
+            and not body.get("opening_position")
+        ):
+            body["opening_position"] = True
     response = await client.post("/api/v1/investments", headers=headers, json=body)
     assert response.status_code == 201, response.text
     return response.json()["data"]
@@ -66,33 +84,91 @@ async def _transfers(client: AsyncClient, headers: dict[str, str]) -> list[dict]
     return response.json()["data"]["items"]
 
 
-async def test_unmanaged_registration_and_defaults(
+async def test_opening_position_books_account_balance(
     db_client: AsyncClient, household_headers: dict[str, str]
 ):
+    brokerage = await _create_account(
+        db_client, household_headers, name="券商", account_type="investment"
+    )
     created = await _investment(
         db_client,
         household_headers,
         name="茅台持仓",
         investment_type="stock",
+        account_id=brokerage["id"],
+        opening_position=True,
         principal="170000",
         annual_rate="0.0",
         liquidity="T0",
     )
-    assert created["account_id"] is None
+    assert created["account_id"] == brokerage["id"]
     assert created["principal"] == "170000.00000000"
     assert created["current_value"] == "170000.00000000"
     assert created["status"] == "active"
     assert created["matured"] is False
     assert created["tag_ids"] == []
+    # The untracked position lands on the investment account, so the ledger
+    # and net worth stay reconciled.
+    assert await _book_balance(db_client, household_headers, brokerage["id"]) == Decimal("170000")
 
-    # Metadata edits work; principal is editable on unmanaged rows.
     renamed = await db_client.put(
         f"/api/v1/investments/{created['id']}",
         headers=household_headers,
-        json={"name": "改名投资", "principal": "180000"},
+        json={"name": "改名投资"},
     )
     assert renamed.status_code == 200, renamed.text
-    assert renamed.json()["data"]["principal"] == "180000.00000000"
+    assert renamed.json()["data"]["name"] == "改名投资"
+
+    locked = await db_client.put(
+        f"/api/v1/investments/{created['id']}",
+        headers=household_headers,
+        json={"principal": "180000"},
+    )
+    assert locked.status_code == 409
+    assert locked.json()["error_code"] == "INVESTMENT_NOT_EDITABLE"
+
+
+async def test_every_investment_requires_an_account_and_funding(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    payload = {
+        "name": "没有账户",
+        "investment_type": "fund",
+        "currency": "CNY",
+        "start_date": TODAY.isoformat(),
+    }
+    missing = await db_client.post("/api/v1/investments", headers=household_headers, json=payload)
+    assert missing.status_code == 422, missing.text
+
+    brokerage = await _create_account(
+        db_client, household_headers, name="券商", account_type="investment"
+    )
+    body = {**payload, "name": "未入金", "account_id": brokerage["id"], "principal": "1000"}
+    unfunded = await db_client.post("/api/v1/investments", headers=household_headers, json=body)
+    assert unfunded.status_code == 422, unfunded.text
+    assert unfunded.json()["error_code"] == "INVESTMENT_FUNDING_REQUIRED"
+
+    cash = await _create_account(db_client, household_headers, name="储蓄")
+    await _set_opening(db_client, household_headers, cash["id"], "10000")
+    both = {
+        **body,
+        "name": "两种资金来源",
+        "opening_position": True,
+        "fund_transfer": {"from_account_id": cash["id"], "from_amount": "1000"},
+    }
+    conflict = await db_client.post("/api/v1/investments", headers=household_headers, json=both)
+    assert conflict.status_code == 422, conflict.text
+    assert conflict.json()["error_code"] == "INVESTMENT_FUNDING_CONFLICT"
+
+    zero = {
+        **body,
+        "name": "零本金期初",
+        "opening_position": True,
+        "principal": "0",
+    }
+    invalid = await db_client.post("/api/v1/investments", headers=household_headers, json=zero)
+    assert invalid.status_code == 422, invalid.text
+    assert invalid.json()["error_code"] == "INVESTMENT_OPENING_INVALID"
 
 
 async def test_managed_funding_flow(db_client: AsyncClient, household_headers: dict[str, str]):
@@ -165,7 +241,11 @@ async def test_managed_put_narrowing_and_value_endpoint(
         db_client, household_headers, name="券商", account_type="investment"
     )
     created = await _investment(
-        db_client, household_headers, account_id=brokerage["id"], principal="1000"
+        db_client,
+        household_headers,
+        account_id=brokerage["id"],
+        principal="1000",
+        opening_position=True,
     )
 
     locked = await db_client.put(
@@ -367,7 +447,7 @@ async def test_loss_redeem_books(db_client: AsyncClient, household_headers: dict
 
 
 async def test_redeem_validations(db_client: AsyncClient, household_headers: dict[str, str]):
-    created, cash, _ = await _funded_investment(db_client, household_headers)
+    created, _, _ = await _funded_investment(db_client, household_headers)
     dollar_account = await _create_account(
         db_client, household_headers, name="美元户", currency="USD"
     )
@@ -378,15 +458,6 @@ async def test_redeem_validations(db_client: AsyncClient, household_headers: dic
     )
     assert mismatched.status_code == 422
     assert mismatched.json()["error_code"] == "REDEEM_AMOUNT_INVALID"
-
-    unmanaged = await _investment(db_client, household_headers, name="登记型")
-    no_account = await db_client.post(
-        f"/api/v1/investments/{unmanaged['id']}/redeem",
-        headers=household_headers,
-        json={"to_account_id": cash["id"], "to_amount": "10"},
-    )
-    assert no_account.status_code == 409
-    assert no_account.json()["error_code"] == "INVESTMENT_ACCOUNT_REQUIRED"
 
 
 async def test_full_reversal_chain_restores_state(

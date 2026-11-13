@@ -301,10 +301,8 @@ async def _investment(client: AsyncClient, headers: dict[str, str], **payload: o
     return response.json()["data"]
 
 
-async def test_summary_four_quadrant_net_worth(
-    db_client: AsyncClient, household_headers: dict[str, str]
-):
-    """Managed / unmanaged / matured / unmapped-cash quadrants (design 5.2)."""
+async def test_summary_managed_net_worth(db_client: AsyncClient, household_headers: dict[str, str]):
+    """Managed funding, opening positions, matured and unmapped cash (5.2)."""
     from datetime import date, timedelta
 
     TODAY = date.today()
@@ -328,15 +326,17 @@ async def test_summary_four_quadrant_net_worth(
         headers=household_headers,
         json={"current_value": "7000"},
     )
-    unmanaged = await _investment(
+    opening = await _investment(
         db_client,
         household_headers,
-        name="未托管股票",
+        name="账外股票",
         investment_type="stock",
+        account_id=brokerage["id"],
         principal="2000",
+        opening_position=True,
     )
     await db_client.put(
-        f"/api/v1/investments/{unmanaged['id']}/value",
+        f"/api/v1/investments/{opening['id']}/value",
         headers=household_headers,
         json={"current_value": "2500"},
     )
@@ -346,6 +346,7 @@ async def test_summary_four_quadrant_net_worth(
         name="到期定存",
         account_id=brokerage["id"],
         principal="1000",
+        opening_position=True,
         end_date=(TODAY - timedelta(days=1)).isoformat(),
     )
     await db_client.put(
@@ -356,15 +357,15 @@ async def test_summary_four_quadrant_net_worth(
 
     summary = await _summary(db_client, household_headers)
     assert summary["buckets"]["idle"] == "15000.00000000"  # bank 1000 + funding leftover 14000
-    assert summary["buckets"]["invested"] == "8500.00000000"  # 6000 + 2500
+    assert summary["buckets"]["invested"] == "8000.00000000"  # 6000 + 2000 principal
     assert summary["buckets"]["matured"] == "1000.00000000"
-    assert summary["unrealized_pnl"] == "1100.00000000"
-    assert summary["unmapped_cash"] == "-1000.00000000"
-    # net = 1000 cash + 6000 account + 1100 floating + 2500 unmanaged
-    assert summary["net_worth"] == "24600.00000000"  # 15000 + 6000 + 1100 + 2500
+    assert summary["unrealized_pnl"] == "1600.00000000"  # 1000 + 500 + 100
+    assert summary["unmapped_cash"] == "0E-8"
+    # net = 15000 cash + 9000 investment accounts + 1600 floating
+    assert summary["net_worth"] == "25600.00000000"
     assert len(summary["matured_investments"]) == 1
     assert summary["matured_investments"][0]["name"] == "到期定存"
 
     snapshot = await db_client.post("/api/v1/assets/snapshots", headers=household_headers)
     assert snapshot.status_code == 201, snapshot.text
-    assert snapshot.json()["data"]["net_worth"] == "24600.00000000"
+    assert snapshot.json()["data"]["net_worth"] == "25600.00000000"

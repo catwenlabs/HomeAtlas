@@ -77,32 +77,37 @@ def login() -> None:
 
 def seed_accounts() -> dict[str, str]:
     existing = {row["name"]: row["id"] for row in items("/accounts?page_size=100")}
-    specs = [
+    specs: list[tuple[str, str, str, str | None, str | None, str | None]] = [
         ("招商银行储蓄卡", "bank", "CNY", "招商银行", "120000", None),
         ("支付宝余额", "wallet", "CNY", "支付宝", "8000", None),
         ("微信零钱", "wallet", "CNY", "微信", "2500", None),
         ("港币储蓄", "bank", "HKD", "汇丰银行", "50000", "0.915"),
         ("美元储蓄", "bank", "USD", "汇丰银行", "25000", "7.12"),
         ("美股券商", "investment", "USD", "Interactive Brokers", "20000", "7.12"),
+        # 容器账户：期初由投资的 opening_position 累加，这里不写余额，
+        # 避免重复执行种子时把已建仓的期初覆盖成 0。
+        ("证券账户", "investment", "CNY", "中信证券", None, None),
+        ("理财账户", "investment", "CNY", "招商银行", None, None),
+        ("港股券商", "investment", "HKD", "盈透证券", None, None),
     ]
     for name, account_type, currency, institution, opening, rate in specs:
         if name in existing:
             account_id = existing[name]
             print(f"· 账户已存在：{name}")
         else:
-            account = call(
-                "POST",
-                "/accounts",
-                {
-                    "name": name,
-                    "account_type": account_type,
-                    "currency": currency,
-                    "institution": institution,
-                },
-            )
+            payload: dict[str, Any] = {
+                "name": name,
+                "account_type": account_type,
+                "currency": currency,
+            }
+            if institution is not None:
+                payload["institution"] = institution
+            account = call("POST", "/accounts", payload)
             account_id = account["id"]
             existing[name] = account_id
             print(f"✓ 账户：{name}")
+        if opening is None:
+            continue
         balance: dict[str, Any] = {
             "amount": opening,
             "currency": currency,
@@ -160,17 +165,22 @@ def seed_investments(accounts: dict[str, str], tags: dict[str, str]) -> None:
         {
             "name": "贵州茅台",
             "investment_type": "stock",
+            "account_id": accounts["证券账户"],
+            "opening_position": True,
             "principal": "150000",
             "current_value": "178400",
             "currency": "CNY",
             "start_date": "2023-03-15",
-            "remark": "独立快照：不关联资金账户",
+            "remark": "期初建仓：成本来自已有持仓",
             "tag_ids": [tags["长期持有"], tags["高风险"]],
             "holdings": [("SH", "600519", "100", "1500")],
         },
         {
             "name": "腾讯控股",
             "investment_type": "stock",
+            "account_id": accounts["港股券商"],
+            "opening_position": True,
+            "opening_exchange_rate": "0.915",
             "principal": "80000",
             "current_value": "94500",
             "currency": "HKD",
@@ -195,6 +205,8 @@ def seed_investments(accounts: dict[str, str], tags: dict[str, str]) -> None:
         {
             "name": "天天盈货币基金",
             "investment_type": "daily",
+            "account_id": accounts["理财账户"],
+            "opening_position": True,
             "principal": "30000",
             "current_value": "30350",
             "currency": "CNY",
@@ -206,6 +218,8 @@ def seed_investments(accounts: dict[str, str], tags: dict[str, str]) -> None:
         {
             "name": "三年定期存款",
             "investment_type": "fixed",
+            "account_id": accounts["理财账户"],
+            "opening_position": True,
             "principal": "100000",
             "current_value": "100000",
             "currency": "CNY",
@@ -218,6 +232,8 @@ def seed_investments(accounts: dict[str, str], tags: dict[str, str]) -> None:
         {
             "name": "国债 2024",
             "investment_type": "bond",
+            "account_id": accounts["理财账户"],
+            "opening_position": True,
             "principal": "50000",
             "current_value": "51800",
             "currency": "CNY",

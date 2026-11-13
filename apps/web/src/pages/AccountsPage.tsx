@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Landmark, Pencil, Plus, Scale, Trash2, Wallet } from "lucide-react";
+import { CreditCard, Landmark, Pencil, Plus, Scale, Trash2, Wallet } from "lucide-react";
 import { useState } from "react";
 
 import { accountsApi, statisticsApi } from "../api/endpoints";
@@ -26,6 +26,8 @@ const ACCOUNT_TYPES = [
   { value: "bank", label: "银行卡" },
   { value: "cash", label: "现金" },
   { value: "wallet", label: "电子钱包" },
+  { value: "credit", label: "信用卡" },
+  { value: "investment", label: "投资账户" },
   { value: "other", label: "其他" },
 ];
 
@@ -35,6 +37,7 @@ interface AccountForm {
   account_type: string;
   currency: string;
   is_active: boolean;
+  credit_limit: string;
 }
 
 export function AccountsPage() {
@@ -50,6 +53,7 @@ export function AccountsPage() {
     account_type: "bank",
     currency: household?.base_currency ?? "CNY",
     is_active: true,
+    credit_limit: "",
   });
   const [balanceAccount, setBalanceAccount] = useState<Account | null>(null);
   const [balanceForm, setBalanceForm] = useState({ amount: "", currency: "", date: todayInput() });
@@ -77,6 +81,8 @@ export function AccountsPage() {
         institution: form.institution.trim() || null,
         account_type: form.account_type,
         currency: form.currency,
+        credit_limit:
+          form.account_type === "credit" ? form.credit_limit.trim() || null : null,
       }),
     onSuccess: async () => {
       setModalOpen(false);
@@ -93,6 +99,8 @@ export function AccountsPage() {
         account_type: form.account_type,
         currency: form.currency,
         is_active: form.is_active,
+        credit_limit:
+          form.account_type === "credit" ? form.credit_limit.trim() || null : null,
       }),
     onSuccess: async () => {
       setModalOpen(false);
@@ -132,6 +140,7 @@ export function AccountsPage() {
       account_type: "bank",
       currency: household?.base_currency ?? "CNY",
       is_active: true,
+      credit_limit: "",
     });
     setModalOpen(true);
   }
@@ -144,6 +153,7 @@ export function AccountsPage() {
       account_type: account.account_type,
       currency: account.currency,
       is_active: account.is_active,
+      credit_limit: account.credit_limit ?? "",
     });
     setModalOpen(true);
   }
@@ -197,13 +207,21 @@ export function AccountsPage() {
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {accounts.data.map((account) => {
             const lines = balanceMap.get(account.id) ?? [];
+            const ownBalance =
+              lines.find((line) => line.currency === account.currency)?.book_balance ?? "0";
+            const availableCredit =
+              account.credit_limit === null
+                ? null
+                : Number(account.credit_limit) + Number(ownBalance);
             return (
               <Card key={account.id} className="flex flex-col p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <span className="grid h-10 w-10 place-items-center rounded-2xl bg-primary-50 text-primary-700">
-                      {account.account_type === "cash" ? (
+                      {account.account_type === "cash" || account.account_type === "wallet" ? (
                         <Wallet className="h-4 w-4" />
+                      ) : account.account_type === "credit" ? (
+                        <CreditCard className="h-4 w-4" />
                       ) : (
                         <Landmark className="h-4 w-4" />
                       )}
@@ -238,6 +256,23 @@ export function AccountsPage() {
                     <p className="text-xs text-ink/45">暂无余额，先设置期初余额或记账。</p>
                   )}
                 </div>
+
+                {account.account_type === "credit" ? (
+                  <div className="mt-2 flex items-center justify-between rounded-xl bg-canvas/60 px-3 py-2 text-xs">
+                    <span className="text-ink/50">
+                      额度{" "}
+                      {account.credit_limit === null
+                        ? "不限"
+                        : money(account.credit_limit, account.currency)}
+                    </span>
+                    <span className="font-medium text-ink">
+                      可用{" "}
+                      {availableCredit === null
+                        ? "不限"
+                        : money(availableCredit.toFixed(2), account.currency)}
+                    </span>
+                  </div>
+                ) : null}
 
                 <div className="mt-4 flex flex-wrap gap-1.5">
                   <Button variant="outline" className="h-8 px-2.5 text-xs" onClick={() => openBalance(account)}>
@@ -320,6 +355,20 @@ export function AccountsPage() {
               placeholder="例如 招商银行"
             />
           </Field>
+          {form.account_type === "credit" ? (
+            <Field label="信用额度" hint="留空表示不限额度">
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={form.credit_limit}
+                onChange={(event) =>
+                  setForm((value) => ({ ...value, credit_limit: event.target.value }))
+                }
+                placeholder="例如 50000"
+              />
+            </Field>
+          ) : null}
           {editing ? (
             <Field label="状态">
               <Select

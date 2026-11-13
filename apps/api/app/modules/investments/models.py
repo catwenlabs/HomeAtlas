@@ -1,8 +1,8 @@
 """finance.investments and satellite tables (asset-design sections 4.4-4.6).
 
-An investment with account_id is "managed" (principal arrived via internal
-transfers recorded in investment_transfers); without one it is "unmanaged"
-— a pure registration snapshot that never touches the account system.
+Every investment is "managed": account_id is required and the principal is
+funded through internal transfers or an explicit opening position, so the
+account balance and the reported net worth stay reconciled.
 """
 
 from datetime import date, datetime
@@ -52,9 +52,7 @@ class Investment(Base):
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     investment_type: Mapped[str] = mapped_column(String(20), nullable=False)
-    account_id: Mapped[UUID | None] = mapped_column(
-        Uuid, ForeignKey("core.accounts.id"), nullable=True
-    )
+    account_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("core.accounts.id"), nullable=False)
     principal: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     current_value: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     currency: Mapped[str] = mapped_column(

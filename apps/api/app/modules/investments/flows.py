@@ -41,12 +41,7 @@ from app.modules.transfers import service as transfers_service
 
 
 def ensure_managed(investment: Investment) -> UUID:
-    if investment.account_id is None:
-        raise AppError(
-            "This action requires a managed investment (one with an investment account)",
-            status_code=409,
-            error_code="INVESTMENT_ACCOUNT_REQUIRED",
-        )
+    """Return the investment account. account_id is required on every row."""
     return investment.account_id
 
 

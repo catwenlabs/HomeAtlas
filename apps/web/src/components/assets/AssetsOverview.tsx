@@ -109,10 +109,7 @@ export function AssetsOverview({ base }: { base: string }) {
   const allocation = Object.entries(
     (investments.data?.items ?? []).reduce<Record<string, number>>((acc, investment) => {
       if (investment.status !== "active") return acc;
-      const value =
-        investment.account_id === null
-          ? Number(investment.current_value)
-          : Number(investment.principal);
+      const value = Number(investment.principal);
       acc[investment.investment_type] = (acc[investment.investment_type] ?? 0) + value;
       return acc;
     }, {}),
@@ -135,7 +132,7 @@ export function AssetsOverview({ base }: { base: string }) {
         <StatCard
           label="净资产"
           value={money(data.net_worth, base)}
-          hint={`现金 + 投资浮盈 − 负债 · ${data.currency_breakdown.length} 个币种`}
+          hint={`现金 + 投资账户 + 浮盈 − 负债 · ${data.currency_breakdown.length} 个币种`}
           icon={Scale}
           tone="text-indigo-700 bg-indigo-50"
         />
@@ -337,15 +334,16 @@ export function AssetsOverview({ base }: { base: string }) {
         {guideOpen ? (
           <div className="mt-3 space-y-2 text-sm leading-relaxed text-slate-600">
             <p>
-              <strong className="text-slate-800">净资产 = 现金 + 投资资产 − 负债。</strong>{" "}
-              闲置现金是各账户的正余额（信用卡欠款算负债，溢缴款算现金）；投资分两类——
-              「托管型」本金经内部转账进入投资账户，市值变化只把浮盈计入净资产；
-              「登记型」（推荐股票用法）不关联账户，全额按当前估值计入。
+              <strong className="text-slate-800">
+                净资产 = 现金 + 投资账户余额 + 浮盈 − 负债。
+              </strong>{" "}
+              闲置现金是非投资账户的正余额（信用卡欠款算负债，溢缴款算现金）。每笔投资都挂在投资账户上：
+              本金来自转账入金，或来自期初建仓（现金来源不追溯，记入该账户的期初余额）。市值相对本金的差额记为浮盈。
             </p>
             <p>
               <strong className="text-slate-800">入金为什么是转账？</strong>{" "}
-              如果把买入记成支出，家庭总资产会被错误地削减。转账保证钱只是换了位置，
-              账户余额始终能由流水推导；真正的盈亏只在赎回时结算为「投资收益 / 投资亏损」。
+              如果把买入记成支出，家庭总资产会被错误地削减。转账只是把钱换到投资账户；
+              期初建仓则把已有持仓记进该账户的期初余额。真正的盈亏只在赎回时结算为「投资收益 / 投资亏损」。
             </p>
             <p>
               <strong className="text-slate-800">到期 ≠ 赎回。</strong>{" "}

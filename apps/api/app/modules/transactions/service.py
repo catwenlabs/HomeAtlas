@@ -189,6 +189,7 @@ async def set_opening_balance(
     exchange_rate_date: date | None,
     transaction_date: datetime | None,
     description: str | None,
+    commit: bool = True,
 ) -> Transaction:
     """Create or replace the opening-balance entry for one account currency.
 
@@ -262,9 +263,53 @@ async def set_opening_balance(
         before=before,
         after=_audit_data(transaction),
     )
-    await session.commit()
-    await session.refresh(transaction)
+    if commit:
+        await session.commit()
+        await session.refresh(transaction)
     return transaction
+
+
+async def add_opening_balance(
+    session: AsyncSession,
+    account: Account,
+    household: Household,
+    *,
+    amount: Decimal,
+    currency_code: str | None = None,
+    exchange_rate: Decimal | None = None,
+    description: str | None = None,
+) -> Transaction:
+    """Add ``amount`` to the account's opening balance without committing.
+
+    Opening balances are one replaceable row per account/currency, so
+    callers that bring an existing position onto the books (investment
+    opening positions, data migrations) increment that row instead of
+    creating a second one.
+    """
+    currency = (currency_code or str(account.currency).strip()).upper()
+    existing = await session.scalar(
+        select(Transaction)
+        .where(
+            Transaction.account_id == account.id,
+            Transaction.currency == currency,
+            Transaction.transaction_type == TransactionType.OPENING_BALANCE.value,
+        )
+        .order_by(Transaction.created_at.asc())
+        .limit(1)
+    )
+    base = existing.amount if existing is not None else Decimal("0")
+    return await set_opening_balance(
+        session,
+        account,
+        household,
+        amount=base + amount,
+        currency_code=currency,
+        exchange_rate=exchange_rate,
+        exchange_rate_date=None,
+        transaction_date=None,
+        description=description or (existing.description if existing is not None else None),
+        commit=False,
+    )
 
 
 async def create_transaction(

@@ -175,6 +175,9 @@ export const accountsApi = {
     institution?: string | null;
     account_type?: string;
     currency?: string;
+    annual_rate?: string | null;
+    liquidity?: string | null;
+    credit_limit?: string | null;
   }) => post<Account>("/accounts", payload),
   update: (
     id: string,
@@ -184,6 +187,9 @@ export const accountsApi = {
       account_type?: string;
       currency?: string;
       is_active?: boolean;
+      annual_rate?: string | null;
+      liquidity?: string | null;
+      credit_limit?: string | null;
     },
   ) => put<Account>(`/accounts/${id}`, payload),
   remove: (id: string) => remove(`/accounts/${id}`),
@@ -403,7 +409,7 @@ export const marketApi = {
 export interface InvestmentInput {
   name: string;
   investment_type: Investment["investment_type"];
-  account_id?: string | null;
+  account_id: string;
   principal?: string;
   current_value?: string;
   currency: string;
@@ -414,6 +420,8 @@ export interface InvestmentInput {
   remark?: string | null;
   tag_ids?: string[];
   fund_transfer?: FundTransferInput;
+  opening_position?: boolean;
+  opening_exchange_rate?: string;
 }
 
 export interface InvestmentUpdateInput {
@@ -424,7 +432,6 @@ export interface InvestmentUpdateInput {
   end_date?: string | null;
   liquidity?: string | null;
   remark?: string | null;
-  principal?: string;
 }
 
 export interface FundTransferInput {

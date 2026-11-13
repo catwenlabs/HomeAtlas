@@ -9,13 +9,14 @@ import {
   investmentsApi,
   type FundTransferInput,
   type InvestmentInput,
+  type InvestmentUpdateInput,
 } from "../../api/endpoints";
 import type { Investment } from "../../api/types";
 import { decimalInput, money, todayInput } from "../../lib/utils";
 import { Button, ErrorBanner, Field, Input, Modal, Select } from "../ui";
 
 const TYPE_OPTIONS: { value: Investment["investment_type"]; label: string }[] = [
-  { value: "stock", label: "股票（登记快照，推荐）" },
+  { value: "stock", label: "股票" },
   { value: "fund", label: "基金" },
   { value: "fixed", label: "定期理财" },
   { value: "daily", label: "活期理财" },
@@ -24,19 +25,32 @@ const TYPE_OPTIONS: { value: Investment["investment_type"]; label: string }[] = 
   { value: "other", label: "其他" },
 ];
 
+type FundingMode = "transfer" | "opening" | "none";
+
+function readOptional(data: FormData, key: string): string | null {
+  const value = String(data.get(key) ?? "").trim();
+  return value === "" ? null : value;
+}
+
+function readInvestmentFields(data: FormData): InvestmentUpdateInput {
+  return {
+    name: String(data.get("name") ?? ""),
+    investment_type: String(data.get("investment_type") ?? "stock") as Investment["investment_type"],
+    start_date: String(data.get("start_date") ?? todayInput()),
+    end_date: readOptional(data, "end_date"),
+    annual_rate: readOptional(data, "annual_rate"),
+    liquidity: readOptional(data, "liquidity"),
+    remark: readOptional(data, "remark"),
+  };
+}
+
 interface InvestmentFormModalProps {
   open: boolean;
   onClose: () => void;
   investment: Investment | null;
-  defaultManaged: boolean;
 }
 
-export function InvestmentFormModal({
-  open,
-  onClose,
-  investment,
-  defaultManaged,
-}: InvestmentFormModalProps) {
+export function InvestmentFormModal({ open, onClose, investment }: InvestmentFormModalProps) {
   const queryClient = useQueryClient();
   const currencies = useQuery({
     queryKey: ["currencies"],
@@ -56,9 +70,12 @@ export function InvestmentFormModal({
 
   const [error, setError] = useState<string | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [fundingMode, setFundingMode] = useState<FundingMode>("transfer");
 
   useEffect(() => {
     setSelectedTags(investment?.tag_ids ?? []);
+    setFundingMode("transfer");
+    setError(null);
   }, [investment, open]);
 
   const investmentAccounts = (accounts.data?.items ?? []).filter(
@@ -69,11 +86,23 @@ export function InvestmentFormModal({
   );
 
   const save = useMutation({
-    mutationFn: (payload: InvestmentInput) =>
-      investment ? investmentsApi.update(investment.id, payload) : investmentsApi.create(payload),
+    mutationFn: async (payload: InvestmentInput) => {
+      if (!investment) return investmentsApi.create(payload);
+      await investmentsApi.update(investment.id, {
+        name: payload.name,
+        investment_type: payload.investment_type,
+        annual_rate: payload.annual_rate,
+        start_date: payload.start_date,
+        end_date: payload.end_date,
+        liquidity: payload.liquidity,
+        remark: payload.remark,
+      });
+      return investmentsApi.setTags(investment.id, payload.tag_ids ?? []);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["investments"] });
       queryClient.invalidateQueries({ queryKey: ["assets"] });
+      queryClient.invalidateQueries({ queryKey: ["accounts"] });
       queryClient.invalidateQueries({ queryKey: ["investment-tags"] });
       onClose();
     },
@@ -81,34 +110,33 @@ export function InvestmentFormModal({
   });
 
   const isEdit = investment !== null;
-  const managed = (investment?.account_id ?? null) !== null;
 
   return (
-    <Modal open={open} onClose={onClose} title={isEdit ? "编辑投资" : "登记投资"}>
+    <Modal open={open} onClose={onClose} title={isEdit ? "编辑投资" : "新增投资"}>
       <form
         className="space-y-4"
         onSubmit={(event) => {
           event.preventDefault();
           setError(null);
           const data = new FormData(event.currentTarget);
-          const accountId = String(data.get("account_id") ?? "");
+          const fields = readInvestmentFields(data);
           const payload: InvestmentInput = {
-            name: String(data.get("name") ?? ""),
-            investment_type: String(data.get("investment_type") ?? "stock") as Investment["investment_type"],
-            currency: String(data.get("currency") ?? "CNY"),
-            start_date: String(data.get("start_date") ?? todayInput()),
-            end_date: (data.get("end_date") as string) || null,
-            annual_rate: (data.get("annual_rate") as string) || null,
-            liquidity: (data.get("liquidity") as string) || null,
-            remark: (data.get("remark") as string) || null,
-            account_id: accountId || null,
+            ...fields,
+            name: fields.name ?? "",
+            investment_type: fields.investment_type ?? "stock",
+            start_date: fields.start_date ?? todayInput(),
+            currency: String(data.get("currency") ?? investment?.currency ?? "CNY"),
+            account_id: String(data.get("account_id") ?? investment?.account_id ?? ""),
             tag_ids: selectedTags,
           };
           if (!isEdit) {
-            payload.principal = String(data.get("principal") ?? "0") || "0";
-            const fundAmount = String(data.get("fund_amount") ?? "");
-            const fromAccountId = String(data.get("from_account_id") ?? "");
-            if (fromAccountId && fundAmount) {
+            if (fundingMode === "transfer") {
+              const fromAccountId = String(data.get("from_account_id") ?? "");
+              const fundAmount = String(data.get("fund_amount") ?? "");
+              if (!fromAccountId || !fundAmount) {
+                setError("转账入金需要选择转出账户并填写金额");
+                return;
+              }
               const fund: FundTransferInput = {
                 from_account_id: fromAccountId,
                 from_amount: fundAmount,
@@ -116,10 +144,19 @@ export function InvestmentFormModal({
               const rate = String(data.get("fund_exchange_rate") ?? "");
               if (rate) fund.exchange_rate = rate;
               payload.fund_transfer = fund;
+            } else if (fundingMode === "opening") {
+              const principal = String(data.get("principal") ?? "");
+              if (!principal || Number(principal) <= 0) {
+                setError("期初建仓需要填写大于 0 的本金");
+                return;
+              }
+              payload.opening_position = true;
+              payload.principal = principal;
+              const currentValue = String(data.get("current_value") ?? "");
+              if (currentValue) payload.current_value = currentValue;
+              const rate = String(data.get("opening_exchange_rate") ?? "");
+              if (rate) payload.opening_exchange_rate = rate;
             }
-          } else if (!managed) {
-            const principal = String(data.get("principal") ?? "");
-            if (principal) payload.principal = principal;
           }
           save.mutate(payload);
         }}
@@ -137,8 +174,8 @@ export function InvestmentFormModal({
               ))}
             </Select>
           </Field>
-          <Field label="币种">
-            <Select name="currency" defaultValue={investment?.currency ?? "CNY"}>
+          <Field label="币种" hint={isEdit ? "币种创建后不可更改" : undefined}>
+            <Select name="currency" defaultValue={investment?.currency ?? "CNY"} disabled={isEdit}>
               {(currencies.data?.items ?? []).map((item) => (
                 <option key={item.code} value={item.code}>
                   {item.code} {item.name}
@@ -175,13 +212,16 @@ export function InvestmentFormModal({
               ))}
             </Select>
           </Field>
-          <Field label={managed ? "托管投资账户" : "托管投资账户（可选，留空 = 独立快照）"}>
+          <Field label="投资账户" hint={isEdit ? "账户创建后不可更改" : "须与投资币种一致"}>
             <Select
               name="account_id"
               defaultValue={investment?.account_id ?? ""}
               disabled={isEdit}
+              required={!isEdit}
             >
-              <option value="">不关联（独立快照）</option>
+              <option value="" disabled>
+                选择投资账户
+              </option>
               {investmentAccounts.map((account) => (
                 <option key={account.id} value={account.id}>
                   {account.name}（{account.currency}）
@@ -191,46 +231,82 @@ export function InvestmentFormModal({
           </Field>
         </div>
 
-        {!isEdit || !managed ? (
-          <Field label={managed ? "登记本金（托管型由入金累积，无需填写）" : "投入本金（登记口径）"}>
-            <Input
-              name="principal"
-              inputMode="decimal"
-              placeholder="0"
-              defaultValue={investment && !managed ? decimalInput(investment.principal) : ""}
-              disabled={managed}
-            />
-          </Field>
+        {!isEdit && investmentAccounts.length === 0 ? (
+          <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+            还没有投资账户。请先到「账户」页创建一个「投资账户」，再回来登记投资。
+          </p>
         ) : null}
 
-        {isEdit ? null : (
+        {isEdit ? (
+          <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+            本金 {money(investment.principal, investment.currency)} 由入金记录或期初建仓决定，
+            如需调整请通过「追加入金」或赎回处理。
+          </p>
+        ) : (
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-            <p className="text-xs font-medium text-slate-600">
-              建仓入金（可选；托管型从现金账户同事务划入）
-            </p>
-            <div className="mt-2 grid gap-3 sm:grid-cols-3">
-              <Field label="从账户">
-                <Select name="from_account_id" defaultValue="">
-                  <option value="">不划款</option>
-                  {cashAccounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.name}（{account.currency}）
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              <Field label="金额">
-                <Input name="fund_amount" inputMode="decimal" placeholder="10000" />
-              </Field>
-              <Field label="汇率（跨币种必填）">
-                <Input name="fund_exchange_rate" inputMode="decimal" placeholder="自动 = 1" />
-              </Field>
+            <p className="text-xs font-medium text-slate-600">资金来源</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {(
+                [
+                  ["transfer", "转账入金", "从现金账户同事务划入"],
+                  ["opening", "期初建仓", "现金来源不追溯，计入账户期初"],
+                  ["none", "暂不入金", "本金为 0，后续再追加"],
+                ] as [FundingMode, string, string][]
+              ).map(([value, label, hint]) => (
+                <button
+                  key={value}
+                  type="button"
+                  title={hint}
+                  onClick={() => setFundingMode(value)}
+                  className={`rounded-full border px-3 py-1 text-xs transition ${
+                    fundingMode === value
+                      ? "border-primary-500 bg-primary-50 text-primary-700"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
-            {defaultManaged ? (
+
+            {fundingMode === "transfer" ? (
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <Field label="从账户">
+                  <Select name="from_account_id" defaultValue="" required>
+                    <option value="" disabled>
+                      选择现金账户
+                    </option>
+                    {cashAccounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.name}（{account.currency}）
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="入金金额">
+                  <Input name="fund_amount" inputMode="decimal" required placeholder="10000" />
+                </Field>
+                <Field label="汇率（跨币种必填）">
+                  <Input name="fund_exchange_rate" inputMode="decimal" placeholder="同币种留空" />
+                </Field>
+              </div>
+            ) : fundingMode === "opening" ? (
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <Field label="本金">
+                  <Input name="principal" inputMode="decimal" required placeholder="170000" />
+                </Field>
+                <Field label="当前估值（可选）">
+                  <Input name="current_value" inputMode="decimal" placeholder="默认等于本金" />
+                </Field>
+                <Field label="汇率（跨币种必填）">
+                  <Input name="opening_exchange_rate" inputMode="decimal" placeholder="同币种留空" />
+                </Field>
+              </div>
+            ) : (
               <p className="mt-2 text-xs text-slate-500">
-                提示：选择了托管账户但未划款时，本金按上方登记值计。
+                先建一笔空投资，之后可用「追加入金」补充本金。
               </p>
-            ) : null}
+            )}
           </div>
         )}
 

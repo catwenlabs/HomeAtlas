@@ -16,6 +16,7 @@ from app.modules.accounts.models import Account
 from app.modules.accounts.service import get_account
 from app.modules.audit.service import write_audit
 from app.modules.currencies.service import get_currency
+from app.modules.exchange_rates.service import resolve_rate
 from app.modules.households.models import Household
 from app.modules.households.service import household_today
 from app.modules.investments import flows
@@ -33,6 +34,7 @@ from app.modules.investments.schemas import (
     InvestmentUpdate,
     InvestmentValueUpdate,
 )
+from app.modules.transactions import service as transaction_service
 from app.modules.transfers.models import Transfer
 
 _SORTABLE = {
@@ -123,10 +125,15 @@ async def create_investment(
     session: AsyncSession, household: Household, payload: InvestmentCreate
 ) -> Investment:
     await get_currency(session, payload.currency)
-    account: Account | None = None
-    if payload.account_id is not None:
-        account = await _resolve_investment_account(
-            session, household.id, payload.account_id, payload.currency
+    account = await _resolve_investment_account(
+        session, household.id, payload.account_id, payload.currency
+    )
+
+    if payload.fund_transfer is not None and payload.opening_position:
+        raise AppError(
+            "fund_transfer and opening_position are mutually exclusive",
+            status_code=422,
+            error_code="INVESTMENT_FUNDING_CONFLICT",
         )
 
     if payload.fund_transfer is not None and payload.principal > Decimal("0"):
@@ -137,15 +144,40 @@ async def create_investment(
             error_code="INVESTMENT_PRINCIPAL_CONFLICT",
         )
 
+    if payload.opening_position:
+        if payload.principal <= Decimal("0"):
+            raise AppError(
+                "opening_position requires a positive principal",
+                status_code=422,
+                error_code="INVESTMENT_OPENING_INVALID",
+            )
+        principal = payload.principal
+        current_value = (
+            payload.current_value if payload.current_value is not None else payload.principal
+        )
+    elif payload.fund_transfer is not None:
+        principal = Decimal("0")
+        current_value = payload.current_value if payload.current_value is not None else Decimal("0")
+    else:
+        if payload.principal > Decimal("0") or (
+            payload.current_value is not None and payload.current_value > Decimal("0")
+        ):
+            raise AppError(
+                "A managed investment must be funded with fund_transfer, or "
+                "declared as an opening_position when the cash source is untracked",
+                status_code=422,
+                error_code="INVESTMENT_FUNDING_REQUIRED",
+            )
+        principal = Decimal("0")
+        current_value = Decimal("0")
+
     investment = Investment(
         household_id=household.id,
         name=payload.name,
         investment_type=payload.investment_type.value,
-        account_id=account.id if account else None,
-        principal=payload.principal,
-        current_value=(
-            payload.current_value if payload.current_value is not None else payload.principal
-        ),
+        account_id=account.id,
+        principal=principal,
+        current_value=current_value,
         currency=payload.currency,
         annual_rate=payload.annual_rate,
         start_date=payload.start_date,
@@ -159,8 +191,44 @@ async def create_investment(
     for tag in await _resolve_tags(session, household.id, payload.tag_ids):
         session.add(InvestmentTagLink(investment_id=investment.id, tag_id=tag.id))
 
+    if payload.opening_position:
+        base_currency = str(household.base_currency).strip()
+        currency = str(payload.currency).strip()
+        rate = payload.opening_exchange_rate
+        if currency == base_currency:
+            if rate is not None and rate != Decimal("1"):
+                raise AppError(
+                    "exchange_rate must be 1 for the household base currency",
+                    status_code=400,
+                    error_code="EXCHANGE_RATE_INVALID",
+                )
+            rate = Decimal("1")
+        elif rate is None:
+            rate = await resolve_rate(
+                session,
+                household.id,
+                currency,
+                base_currency,
+                household_today(household),
+            )
+            if rate is None:
+                raise AppError(
+                    f"Missing exchange rate for {currency}/{base_currency}",
+                    status_code=400,
+                    error_code="EXCHANGE_RATE_NOT_FOUND",
+                    details={"missing": [f"{currency}/{base_currency}"]},
+                )
+        await transaction_service.add_opening_balance(
+            session,
+            account,
+            household,
+            amount=investment.principal,
+            currency_code=payload.currency,
+            exchange_rate=rate,
+            description=f"Investment opening: {investment.name}",
+        )
+
     if payload.fund_transfer is not None:
-        # Account presence is enforced inside the flow (409 when unmanaged).
         await flows.execute_fund(session, household, investment, payload.fund_transfer)
 
     await session.flush()
@@ -188,14 +256,13 @@ async def update_investment(
     changes = payload.model_dump(exclude_unset=True)
 
     if "principal" in changes:
-        if investment.account_id is not None:
-            raise AppError(
-                "principal is derived from fund transfers on a managed "
-                "investment; adjust it by funding or reversing a fund transfer",
-                status_code=409,
-                error_code="INVESTMENT_NOT_EDITABLE",
-            )
-        investment.principal = changes["principal"]
+        raise AppError(
+            "principal is derived from funding or an opening position; "
+            "adjust it by funding, reversing a fund transfer, or recreating "
+            "the opening position",
+            status_code=409,
+            error_code="INVESTMENT_NOT_EDITABLE",
+        )
 
     if changes.get("name") is not None:
         investment.name = changes["name"]

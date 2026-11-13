@@ -30,7 +30,7 @@ class FundTransferSpec(BaseModel):
 class InvestmentCreate(BaseModel):
     name: Name
     investment_type: InvestmentType
-    account_id: UUID | None = None
+    account_id: UUID
     principal: Amount = Decimal("0")
     current_value: Amount | None = None
     currency: CurrencyCode = "CNY"
@@ -41,6 +41,11 @@ class InvestmentCreate(BaseModel):
     remark: Annotated[str | None, Field(max_length=500)] = None
     tag_ids: list[UUID] = Field(default_factory=list)
     fund_transfer: FundTransferSpec | None = None
+    # Legacy positions whose cash source is not tracked: the principal is
+    # booked as an opening balance on the investment account instead of a
+    # transfer. Mutually exclusive with fund_transfer.
+    opening_position: bool = False
+    opening_exchange_rate: Annotated[Decimal | None, Field(gt=0)] = None
 
     @field_validator("currency")
     @classmethod
@@ -49,7 +54,7 @@ class InvestmentCreate(BaseModel):
 
 
 class InvestmentUpdate(BaseModel):
-    """Metadata only for managed rows; unmanaged may also edit principal."""
+    """Metadata only: principal always comes from funding or an opening position."""
 
     name: Name | None = None
     investment_type: InvestmentType | None = None
@@ -86,7 +91,7 @@ class InvestmentRead(BaseModel):
     household_id: UUID
     name: str
     investment_type: str
-    account_id: UUID | None
+    account_id: UUID
     principal: Decimal
     current_value: Decimal
     currency: str

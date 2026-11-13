@@ -84,9 +84,9 @@ async def _compute_metrics(
                     own_balance, account.annual_rate
                 )
 
-    # Investment side (asset-design 5.2): managed rows contribute their
-    # floating PnL on top of the investment account balance; unmanaged rows
-    # count at full current value. Matured rows stay in net worth but move
+    # Every investment sits on an investment account, so the account balance
+    # already includes principal. Net worth adds only the floating PnL
+    # (current_value - principal). Matured rows stay in net worth but move
     # to the matured bucket for display.
     investments = list(
         (
@@ -102,11 +102,10 @@ async def _compute_metrics(
     matured_bucket: dict[str, Decimal] = defaultdict(Decimal)
     managed_pnl: dict[str, Decimal] = defaultdict(Decimal)
     managed_principal: dict[str, Decimal] = defaultdict(Decimal)
-    unmanaged_value: dict[str, Decimal] = defaultdict(Decimal)
     matured_list: list[dict[str, Any]] = []
     for investment in investments:
         currency = str(investment.currency).strip()
-        measure = investment.principal if investment.account_id else investment.current_value
+        measure = investment.principal
         end_date = investment.end_date
         matured = end_date is not None and end_date <= as_of
         if matured:
@@ -122,11 +121,8 @@ async def _compute_metrics(
             )
         else:
             invested_bucket[currency] += measure
-        if investment.account_id:
-            managed_pnl[currency] += investment.current_value - investment.principal
-            managed_principal[currency] += investment.principal
-        else:
-            unmanaged_value[currency] += investment.current_value
+        managed_pnl[currency] += investment.current_value - investment.principal
+        managed_principal[currency] += investment.principal
         if investment.annual_rate is not None:
             interest_income[currency] += daily_interest(
                 investment.current_value, investment.annual_rate
@@ -145,7 +141,6 @@ async def _compute_metrics(
         | set(invested_bucket)
         | set(matured_bucket)
         | set(managed_pnl)
-        | set(unmanaged_value)
         | set(liabilities)
         | set(loan_interest)
         | set(interest_income)
@@ -158,13 +153,8 @@ async def _compute_metrics(
     total_matured = _convert(matured_bucket, rates)
     total_liabilities = _convert(liabilities, rates)
     total_managed_pnl = _convert(managed_pnl, rates)
-    total_unmanaged = _convert(unmanaged_value, rates)
     net_worth = quantize_money(
-        total_cash
-        + total_invested_accounts
-        + total_managed_pnl
-        + total_unmanaged
-        - total_liabilities
+        total_cash + total_invested_accounts + total_managed_pnl - total_liabilities
     )
     unmapped_cash = quantize_money(total_invested_accounts - _convert(managed_principal, rates))
 

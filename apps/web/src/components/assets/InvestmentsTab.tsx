@@ -117,7 +117,7 @@ export function InvestmentsTab() {
       ) : items.length === 0 ? (
         <EmptyState
           title="还没有投资"
-          description="登记第一笔：股票推荐「独立快照」方式（不关联账户），理财可选择托管并同事务入金。"
+          description="先在「账户」页创建投资账户，再用转账入金或期初建仓登记第一笔。"
         />
       ) : (
         <div className="space-y-3">
@@ -153,7 +153,6 @@ export function InvestmentsTab() {
         open={formOpen}
         onClose={() => setFormOpen(false)}
         investment={editing}
-        defaultManaged={false}
       />
     </div>
   );
@@ -224,7 +223,6 @@ function InvestmentRow({
     onError: (error) => setActionError(errorMessage(error)),
   });
 
-  const managed = investment.account_id !== null;
   const pnl =
     investment.status === "active"
       ? Number(investment.current_value) - Number(investment.principal)
@@ -253,7 +251,6 @@ function InvestmentRow({
           <div className="flex flex-wrap items-center gap-2">
             <p className="font-medium text-slate-900">{investment.name}</p>
             <Badge>{TYPE_LABELS[investment.investment_type] ?? investment.investment_type}</Badge>
-            {managed ? null : <Badge tone="slate">独立快照</Badge>}
             {investment.matured ? <Badge tone="amber">已到期</Badge> : null}
             {investment.status === "redeemed" ? <Badge tone="slate">已赎回</Badge> : null}
             {investment.tag_ids.map((id) =>
@@ -261,7 +258,6 @@ function InvestmentRow({
             )}
           </div>
           <p className="mt-1 text-xs text-slate-500">
-            {managed ? "托管 · " : "登记 · "}
             本金 {money(investment.principal, investment.currency)}
             {investment.end_date ? ` · 到期 ${formatDate(investment.end_date)}` : ""}
           </p>
@@ -339,26 +335,22 @@ function InvestmentRow({
                     {refresh.isPending ? "刷新中…" : "按行情刷新市值"}
                   </button>
                 ) : null}
-                {managed ? (
-                  <>
-                    <button
-                      type="button"
-                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-slate-300"
-                      onClick={() => setFundOpen(true)}
-                    >
-                      <CircleDollarSign className="mr-1 inline h-3.5 w-3.5" />
-                      追加入金
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100"
-                      onClick={() => setRedeemOpen(true)}
-                    >
-                      <BadgeDollarSign className="mr-1 inline h-3.5 w-3.5" />
-                      全额赎回
-                    </button>
-                  </>
-                ) : null}
+                <button
+                  type="button"
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-slate-300"
+                  onClick={() => setFundOpen(true)}
+                >
+                  <CircleDollarSign className="mr-1 inline h-3.5 w-3.5" />
+                  追加入金
+                </button>
+                <button
+                  type="button"
+                  className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100"
+                  onClick={() => setRedeemOpen(true)}
+                >
+                  <BadgeDollarSign className="mr-1 inline h-3.5 w-3.5" />
+                  全额赎回
+                </button>
                 <button
                   type="button"
                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:border-slate-300"
