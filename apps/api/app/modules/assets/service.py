@@ -7,17 +7,16 @@ count at book value, credit overdrafts become liabilities.
 """
 
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import AccountType, InvestmentStatus
-from app.core.money import quantize_money
+from app.core.money import daily_interest, quantize_money
 from app.core.pagination import Pagination, resolve_sort
 from app.core.serialization import jsonable
 from app.modules.accounts.models import Account
@@ -26,19 +25,14 @@ from app.modules.assets.models import NetWorthSnapshot
 from app.modules.audit.service import write_audit
 from app.modules.exchange_rates.service import resolve_rates_to_base
 from app.modules.households.models import Household
+from app.modules.households.service import household_today
 from app.modules.investments.models import Investment
 from app.modules.loans.service import active_loan_interest, active_loan_liabilities
-
-DAYS_PER_YEAR = Decimal("365")
 
 _SORTABLE = {
     "snapshot_date": NetWorthSnapshot.snapshot_date,
     "created_at": NetWorthSnapshot.created_at,
 }
-
-
-def _household_today(household: Household) -> date:
-    return datetime.now(ZoneInfo(str(household.timezone).strip())).date()
 
 
 def _convert(amounts: dict[str, Decimal], rates: dict[str, Decimal]) -> Decimal:
@@ -86,8 +80,8 @@ async def _compute_metrics(
             # Decision: interest accrues on the account's own currency only.
             own_balance = balances.get(str(account.currency).strip(), Decimal("0"))
             if own_balance > 0:
-                interest_income[str(account.currency).strip()] += (
-                    own_balance * account.annual_rate / DAYS_PER_YEAR
+                interest_income[str(account.currency).strip()] += daily_interest(
+                    own_balance, account.annual_rate
                 )
 
     # Investment side (asset-design 5.2): managed rows contribute their
@@ -134,8 +128,8 @@ async def _compute_metrics(
         else:
             unmanaged_value[currency] += investment.current_value
         if investment.annual_rate is not None:
-            interest_income[currency] += (
-                investment.current_value * investment.annual_rate / DAYS_PER_YEAR
+            interest_income[currency] += daily_interest(
+                investment.current_value, investment.annual_rate
             )
 
     # Loan side (2C-3): active loans add their remaining principal to the
@@ -208,7 +202,7 @@ async def _compute_metrics(
 
 
 async def build_summary(session: AsyncSession, household: Household) -> dict[str, Any]:
-    metrics = await _compute_metrics(session, household, _household_today(household))
+    metrics = await _compute_metrics(session, household, household_today(household))
     return {
         "base_currency": metrics["base_currency"],
         "net_worth": metrics["net_worth"],
@@ -233,7 +227,7 @@ async def create_snapshot(
     session: AsyncSession, household: Household
 ) -> tuple[NetWorthSnapshot, bool]:
     """Upsert today's snapshot (household timezone). Returns (row, created)."""
-    snapshot_date = _household_today(household)
+    snapshot_date = household_today(household)
     metrics = await _compute_metrics(session, household, snapshot_date)
     rates_used = {currency: str(rate) for currency, rate in metrics["fx_rates_used"].items()}
     values = {

@@ -7,7 +7,6 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import InvestmentStatus  # noqa: F401 - reserved for filters
 from app.core.exceptions import AppError, NotFoundError
 from app.core.money import quantize_amount, quantize_money
 from app.modules.audit.service import write_audit
@@ -24,6 +23,16 @@ from app.modules.market import service as market_service
 from app.modules.market.provider import MARKET_CURRENCY, quote_key
 
 HOLDING_TYPES = ("stock", "fund")
+
+
+def holding_cost(holding: Holding) -> Decimal:
+    """quantity x cost_price quantized to the money scale."""
+    return quantize_money(holding.quantity * holding.cost_price)
+
+
+def total_cost(rows: list[Holding]) -> Decimal:
+    """Sum of quantity x cost_price, quantized once at the end."""
+    return quantize_money(sum((row.quantity * row.cost_price for row in rows), Decimal("0")))
 
 
 async def get_holding(session: AsyncSession, investment_id: UUID, holding_id: UUID) -> Holding:

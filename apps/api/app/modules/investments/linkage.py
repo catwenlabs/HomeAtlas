@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import InvestmentLinkDirection
+from app.core.enums import InvestmentLinkDirection, InvestmentStatus
 from app.core.exceptions import AppError
 from app.modules.audit.service import write_audit
 from app.modules.households.models import Household
@@ -53,7 +53,7 @@ async def apply_reversal_linkage(
     investment = await _investment(session, link)
 
     if link.direction == InvestmentLinkDirection.FUND.value:
-        if investment.status != "active":
+        if investment.status != InvestmentStatus.ACTIVE.value:
             raise AppError(
                 "The investment is already redeemed; reverse the redeem "
                 "transfer before reversing its funding",
@@ -101,7 +101,7 @@ async def apply_reversal_linkage(
         "current_value": str(investment.current_value),
     }
     pre_redeem = investment.pre_redeem_value or Decimal("0")
-    investment.status = "active"
+    investment.status = InvestmentStatus.ACTIVE.value
     investment.realized_pnl = None
     investment.pre_redeem_value = None
     investment.current_value = pre_redeem

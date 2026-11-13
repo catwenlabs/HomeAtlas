@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import money
 from app.core.enums import LoanStatus
 from app.core.exceptions import AppError, NotFoundError
 from app.core.money import quantize_amount, quantize_money
@@ -16,8 +17,6 @@ from app.modules.currencies.service import get_currency
 from app.modules.households.models import Household
 from app.modules.loans.models import Loan, loan_audit_data
 from app.modules.loans.schemas import LoanCreate, LoanSettle, LoanUpdate
-
-DAYS_PER_YEAR = Decimal("365")
 
 _SORTABLE = {
     "created_at": Loan.created_at,
@@ -30,7 +29,7 @@ _SORTABLE = {
 
 def daily_interest(loan: Loan) -> Decimal:
     """remaining_principal x annual_rate / 365 (estimate, no flows)."""
-    return quantize_money(loan.remaining_principal * loan.annual_rate / DAYS_PER_YEAR)
+    return quantize_money(money.daily_interest(loan.remaining_principal, loan.annual_rate))
 
 
 async def get_loan(session: AsyncSession, household_id: UUID, loan_id: UUID) -> Loan:
@@ -252,7 +251,7 @@ async def active_loan_interest(session: AsyncSession, household_id: UUID) -> dic
     totals: dict[str, Decimal] = {}
     for loan in rows:
         currency = str(loan.currency).strip()
-        totals[currency] = totals.get(currency, Decimal("0")) + (
-            loan.remaining_principal * loan.annual_rate / DAYS_PER_YEAR
+        totals[currency] = totals.get(currency, Decimal("0")) + money.daily_interest(
+            loan.remaining_principal, loan.annual_rate
         )
     return totals

@@ -1,17 +1,16 @@
 """Investment, tag, holding, and quote-valuation endpoints (asset-design 6.3)."""
 
 import uuid
-from decimal import Decimal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db
-from app.core.money import quantize_money
 from app.core.pagination import PaginationDep, page_payload
 from app.core.responses import success_response
 from app.modules.households.dependencies import CurrentHousehold
+from app.modules.households.service import household_today
 from app.modules.investments import holdings, service, tags
 from app.modules.investments.models import Investment
 from app.modules.investments.schemas import (
@@ -37,7 +36,7 @@ SessionDep = Annotated[AsyncSession, Depends(get_db)]
 
 def _holding(holding: Any) -> dict[str, Any]:
     data = HoldingRead.model_validate(holding).model_dump(mode="json")
-    data["cost_subtotal"] = str(quantize_money(holding.quantity * holding.cost_price))
+    data["cost_subtotal"] = str(holdings.holding_cost(holding))
     return data
 
 
@@ -128,7 +127,7 @@ async def list_investments(
         tag_id=tag_id,
         account_id=account_id,
     )
-    today = service.household_today(household)
+    today = household_today(household)
     tag_map = await service.tag_ids_for(session, [i.id for i in investments])
     return success_response(
         page_payload(
@@ -146,7 +145,7 @@ async def create_investment(
     payload: InvestmentCreate,
 ) -> dict[str, Any]:
     investment = await service.create_investment(session, household, payload)
-    today = service.household_today(household)
+    today = household_today(household)
     return success_response(_investment(investment, today=today, tag_ids=list(payload.tag_ids)))
 
 
@@ -157,7 +156,7 @@ async def get_investment(
     investment_id: uuid.UUID,
 ) -> dict[str, Any]:
     investment = await service.get_investment(session, household.id, investment_id)
-    today = service.household_today(household)
+    today = household_today(household)
     tag_map = await service.tag_ids_for(session, [investment.id])
     cost = await service.holdings_cost(session, investment.id)
     return success_response(
@@ -178,7 +177,7 @@ async def update_investment(
     payload: InvestmentUpdate,
 ) -> dict[str, Any]:
     investment = await service.update_investment(session, household, investment_id, payload)
-    today = service.household_today(household)
+    today = household_today(household)
     return success_response(_investment(investment, today=today))
 
 
@@ -200,7 +199,7 @@ async def set_investment_value(
     payload: InvestmentValueUpdate,
 ) -> dict[str, Any]:
     investment = await service.set_value(session, household, investment_id, payload)
-    today = service.household_today(household)
+    today = household_today(household)
     return success_response(_investment(investment, today=today))
 
 
@@ -212,7 +211,7 @@ async def set_investment_tags(
     payload: InvestmentTagsUpdate,
 ) -> dict[str, Any]:
     investment = await service.set_tags(session, household, investment_id, payload.tag_ids)
-    today = service.household_today(household)
+    today = household_today(household)
     return success_response(_investment(investment, today=today, tag_ids=list(payload.tag_ids)))
 
 
@@ -224,7 +223,7 @@ async def fund_investment(
     payload: InvestmentFund,
 ) -> dict[str, Any]:
     investment = await service.fund_investment(session, household, investment_id, payload)
-    today = service.household_today(household)
+    today = household_today(household)
     return success_response(_investment(investment, today=today))
 
 
@@ -236,7 +235,7 @@ async def redeem_investment(
     payload: InvestmentRedeem,
 ) -> dict[str, Any]:
     result = await service.redeem_investment(session, household, investment_id, payload)
-    today = service.household_today(household)
+    today = household_today(household)
     data = _investment(result["investment"], today=today)
     data["redeem_transfer_id"] = str(result["transfer_id"])
     data["realized_pnl"] = str(result["realized_pnl"])
@@ -256,9 +255,7 @@ async def list_holdings(
     return success_response(
         {
             "items": [_holding(row) for row in rows],
-            "holdings_cost": str(
-                quantize_money(sum((row.quantity * row.cost_price for row in rows), Decimal("0")))
-            ),
+            "holdings_cost": str(holdings.total_cost(rows)),
         }
     )
 

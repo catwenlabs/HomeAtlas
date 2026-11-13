@@ -7,11 +7,10 @@ row first (so the investment account balance equals the proceeds), then
 the transfer whose balance guard therefore passes.
 """
 
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,18 +31,13 @@ from app.modules.audit.service import write_audit
 from app.modules.categories.defaults import INVESTMENT_INCOME_NAME, INVESTMENT_LOSS_NAME
 from app.modules.categories.models import Category
 from app.modules.currencies.service import get_currency
-from app.modules.exchange_rates.service import resolve_rate
+from app.modules.exchange_rates.service import EXCHANGE_RATE_PLACES, resolve_rate
 from app.modules.households.models import Household
+from app.modules.households.service import household_today
 from app.modules.investments.models import Investment, InvestmentTransfer
 from app.modules.investments.schemas import FundTransferSpec, InvestmentRedeem
 from app.modules.transactions.models import Transaction
 from app.modules.transfers import service as transfers_service
-
-EXCHANGE_RATE_PLACES = 12
-
-
-def _household_today(household: Household) -> date:
-    return datetime.now(ZoneInfo(str(household.timezone).strip())).date()
 
 
 def ensure_managed(investment: Investment) -> UUID:
@@ -142,7 +136,7 @@ async def execute_fund(
             household.id,
             from_currency.code,
             base_currency.code,
-            _household_today(household),
+            household_today(household),
         )
         if base_exchange_rate is None:
             raise AppError(
@@ -152,7 +146,7 @@ async def execute_fund(
                 details={"missing": [f"{from_currency.code}/{base_currency.code}"]},
             )
 
-    terms = await transfers_service._resolve_terms(
+    terms = await transfers_service.resolve_terms(
         session,
         household,
         from_account_id=spec.from_account_id,
@@ -167,7 +161,7 @@ async def execute_fund(
         fee_currency=None,
         fee_exchange_rate=None,
     )
-    transfer = await transfers_service._persist_transfer(
+    transfer = await transfers_service.persist_transfer(
         session,
         household,
         terms,
@@ -239,7 +233,7 @@ async def execute_redeem(
             error_code="REDEEM_AMOUNT_INVALID",
         )
 
-    today = _household_today(household)
+    today = household_today(household)
     base_rate: Decimal
     if investment_currency.code == base_currency.code:
         base_rate = Decimal("1")
@@ -316,7 +310,7 @@ async def execute_redeem(
         )
 
     # 2. Transfer the proceeds back to the cash account.
-    terms = await transfers_service._resolve_terms(
+    terms = await transfers_service.resolve_terms(
         session,
         household,
         from_account_id=investment_account_id,
@@ -331,7 +325,7 @@ async def execute_redeem(
         fee_currency=None,
         fee_exchange_rate=None,
     )
-    transfer = await transfers_service._persist_transfer(
+    transfer = await transfers_service.persist_transfer(
         session,
         household,
         terms,

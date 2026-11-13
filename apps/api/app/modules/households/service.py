@@ -1,7 +1,9 @@
 """Household use cases."""
 
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +16,11 @@ from app.modules.households.models import Household
 from app.modules.households.schemas import HouseholdUpdate
 from app.modules.transactions.models import Transaction
 from app.modules.transfers.models import Transfer
+
+
+def household_today(household: Household) -> date:
+    """Calendar date right now in the household's timezone."""
+    return datetime.now(ZoneInfo(str(household.timezone).strip())).date()
 
 
 def _audit_data(household: Household) -> dict[str, Any]:

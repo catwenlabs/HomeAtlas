@@ -1,10 +1,9 @@
 """Investment registration use cases (asset-design sections 4.4, 5.5, 6.3)."""
 
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +17,7 @@ from app.modules.accounts.service import get_account
 from app.modules.audit.service import write_audit
 from app.modules.currencies.service import get_currency
 from app.modules.households.models import Household
+from app.modules.households.service import household_today
 from app.modules.investments import flows
 from app.modules.investments.models import (
     Holding,
@@ -41,12 +41,6 @@ _SORTABLE = {
     "name": Investment.name,
     "current_value": Investment.current_value,
 }
-
-HOLDING_TYPES = ("stock", "fund")
-
-
-def household_today(household: Household) -> date:
-    return datetime.now(ZoneInfo(str(household.timezone).strip())).date()
 
 
 def is_matured(investment: Investment, today: date) -> bool:

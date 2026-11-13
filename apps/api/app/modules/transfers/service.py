@@ -164,7 +164,7 @@ async def _ensure_transfer_funds(session: AsyncSession, terms: TransferTerms) ->
         )
 
 
-async def _resolve_terms(
+async def resolve_terms(
     session: AsyncSession,
     household: Household,
     *,
@@ -331,7 +331,7 @@ async def _create_fee_transaction(
     return fee_transaction
 
 
-async def _persist_transfer(
+async def persist_transfer(
     session: AsyncSession,
     household: Household,
     terms: TransferTerms,
@@ -393,7 +393,7 @@ async def create_transfer(
     household: Household,
     payload: TransferCreate,
 ) -> Transfer:
-    terms = await _resolve_terms(
+    terms = await resolve_terms(
         session,
         household,
         from_account_id=payload.from_account_id,
@@ -408,7 +408,7 @@ async def create_transfer(
         fee_currency=payload.fee_currency,
         fee_exchange_rate=payload.fee_exchange_rate,
     )
-    transfer = await _persist_transfer(
+    transfer = await persist_transfer(
         session,
         household,
         terms,
@@ -482,7 +482,7 @@ async def update_transfer(
     else:
         base_exchange_rate = None
 
-    terms = await _resolve_terms(
+    terms = await resolve_terms(
         session,
         household,
         from_account_id=from_account_id,
