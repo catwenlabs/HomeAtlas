@@ -11,6 +11,10 @@ from app.core.enums import CategoryType
 # System category used by transfer fee expense rows. It must never be deleted.
 FINANCIAL_FEE_NAME = "金融手续费"
 
+# System categories used by investment redeem PnL rows (asset-design 7).
+INVESTMENT_INCOME_NAME = "投资收益"
+INVESTMENT_LOSS_NAME = "投资亏损"
+
 
 @dataclass(frozen=True)
 class DefaultCategory:
@@ -31,5 +35,7 @@ DEFAULT_CATEGORIES: tuple[DefaultCategory, ...] = (
     DefaultCategory("住房", CategoryType.EXPENSE, 40, "home"),
     DefaultCategory("娱乐", CategoryType.EXPENSE, 50, "gamepad"),
     DefaultCategory("其他支出", CategoryType.EXPENSE, 60, "minus-circle"),
+    DefaultCategory(INVESTMENT_INCOME_NAME, CategoryType.INCOME, 950, "trending-up"),
+    DefaultCategory(INVESTMENT_LOSS_NAME, CategoryType.EXPENSE, 951, "trending-down"),
     DefaultCategory(FINANCIAL_FEE_NAME, CategoryType.EXPENSE, 990, "receipt"),
 )

@@ -28,6 +28,35 @@ class ExchangeRateSource(StrEnum):
     SYSTEM = "system"
 
 
+class InvestmentType(StrEnum):
+    FIXED = "fixed"
+    DAILY = "daily"
+    FUND = "fund"
+    CASH = "cash"
+    STOCK = "stock"
+    BOND = "bond"
+    OTHER = "other"
+
+
+class InvestmentStatus(StrEnum):
+    ACTIVE = "active"
+    REDEEMED = "redeemed"
+
+
+class InvestmentLinkDirection(StrEnum):
+    FUND = "fund"
+    REDEEM = "redeem"
+
+
+class Market(StrEnum):
+    """Quote markets mapped to their settlement currency."""
+
+    SH = "SH"
+    SZ = "SZ"
+    HK = "HK"
+    US = "US"
+
+
 class CategoryType(StrEnum):
     INCOME = "income"
     EXPENSE = "expense"

@@ -402,6 +402,11 @@ daily_interest_expense = Σ active 贷款 remaining_principal×annual_rate/365
 | ACCOUNT_TYPE_IMMUTABLE | 409 | 已有流水/转账的账户禁改 `account_type`（实施新增，承载 §6.3 H8 收窄） |
 | LOAN_NOT_FOUND / NOT_EDITABLE / NOT_DELETABLE / ALREADY_SETTLED | 404/409/409/409 | |
 | INVESTMENT_NOT_FOUND / NOT_EDITABLE / NOT_DELETABLE / ALREADY_REDEEMED | 404/409/409/409 | |
+| INVESTMENT_ACCOUNT_REQUIRED | 409 | fund/redeem 作用于 unmanaged 投资（实施新增：无托管账户） |
+| HOLDING_NOT_FOUND / DUPLICATE | 404/409 | 持股不存在 / 仓位重复（实施新增） |
+| HOLDING_NOT_SUPPORTED / CURRENCY_MISMATCH | 422/422 | 非 stock/fund 投资 / 市场币种与投资币种不符（实施新增） |
+| QUOTE_PROVIDER_ERROR | 502 | 行情源失败/返回异常（details 带失败代码清单；实施新增） |
+| TAG_DUPLICATE | 409 | 同家庭标签重名（实施新增） |
 | INVESTMENT_HAS_TRANSFERS | 409 | 删除时存在未冲正关联转账 |
 | INVESTMENT_ACCOUNT_INVALID | 422 | account_id 非投资账户/跨家庭/币种不符 |
 | REDEEM_AMOUNT_INVALID | 422 | to_amount ≤ 0 或币种不符 |
@@ -482,3 +487,23 @@ daily_interest_expense = Σ active 贷款 remaining_principal×annual_rate/365
 spec §10 的 2C 范围经本设计实质调整（证券交易/股息/持仓明细/market schema 暂缓、
 新增 investment/credit 账户类型与 exchange_rates 前移为 2C-1），按附录 A 惯例
 在 specification.md 补 v1.4 修订记录，避免规格与实现契约分叉（二审 M15）。
+
+## 15. 2C-2 实施增补（2026-11-14）
+
+用户需求驱动的范围调整（原 §2.2 暂缓项部分提前）：
+
+1. **持股快照提前**：新增 `finance.holdings`（市场/代码/数量/**成本单价**），
+   仅挂 stock/fund 投资；市场→币种绑定 SH/SZ→CNY、HK→HKD、US→USD。
+   成本单价为展示/对账维度，**不进 §5.2 净资产公式**；加仓/减仓与移动
+   加权成本核算仍暂缓（预留 `finance.trades`，holdings 表前向兼容）。
+2. **行情估值提前（按需，非后台）**：新增 market 模块与
+   `GET /market/quotes`、`POST /investments/{id}/refresh-value`；腾讯免
+   key 行情（SH/SZ/HK/US）+ Provider 抽象 + FakeProvider（测试离线）；
+   30s 缓存 / 5s 超时 / 可选代理；刷新自动写入 current_value 并带逐股
+   breakdown 审计。**不做后台定时拉价**（沿用"无明确运维需求不引入后台
+   组件"原则）。
+3. 股票推荐路径为 **unmanaged 独立快照**（不关联账户、不产生转账），
+   与托管型并存；赎回/入金要求 managed（`INVESTMENT_ACCOUNT_REQUIRED`）。
+4. 冲正联动补充定案：投资已 redeemed 时冲正入金转账同样返回
+   `TRANSFER_LINKED_TO_INVESTMENT`（先冲正赎回）；`reverse_transfer`
+   的衍生流水冲正泛化为全部 confirmed 衍生行（覆盖赎回盈利的收入冲正）。

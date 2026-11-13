@@ -14,6 +14,8 @@ from app.modules.currencies.router import router as currencies_router
 from app.modules.exchange_rates.router import router as exchange_rates_router
 from app.modules.households.router import router as households_router
 from app.modules.imports.router import router as imports_router
+from app.modules.investments.router import router as investments_router
+from app.modules.market.router import router as market_router
 from app.modules.setup.router import router as setup_router
 from app.modules.statistics.router import router as statistics_router
 from app.modules.transactions.router import router as transactions_router
@@ -35,4 +37,6 @@ api_router.include_router(imports_router)
 api_router.include_router(statistics_router)
 api_router.include_router(exchange_rates_router)
 api_router.include_router(assets_router)
+api_router.include_router(investments_router)
+api_router.include_router(market_router)
 api_router.include_router(users_router)

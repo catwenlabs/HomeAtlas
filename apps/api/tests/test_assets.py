@@ -163,10 +163,12 @@ async def test_investment_account_balance_counts_as_invested(
     await _set_opening(db_client, household_headers, brokerage["id"], "500")
 
     summary = await _summary(db_client, household_headers)
-    assert summary["buckets"]["invested"] == "500.00000000"
+    # No investment is registered, so the display bucket stays empty; the
+    # money counts in net worth via the account balance and shows up as
+    # unmapped cash (design 5.2).
+    assert summary["buckets"]["invested"] == "0E-8"
     assert summary["buckets"]["idle"] == "0E-8"
     assert summary["net_worth"] == "500.00000000"
-    # No investment records exist yet, so the whole balance is unmapped cash.
     assert summary["unmapped_cash"] == "500.00000000"
 
 
@@ -282,3 +284,87 @@ async def test_snapshot_trend_and_monthly(
     )
     assert empty.status_code == 200
     assert empty.json()["data"]["months"] == []
+
+
+async def _investment(client: AsyncClient, headers: dict[str, str], **payload: object) -> dict:
+    from datetime import date as date_
+
+    body: dict[str, object] = {
+        "name": "投资",
+        "investment_type": "fund",
+        "currency": "CNY",
+        "start_date": date_.today().isoformat(),
+    }
+    body.update(payload)
+    response = await client.post("/api/v1/investments", headers=headers, json=body)
+    assert response.status_code == 201, response.text
+    return response.json()["data"]
+
+
+async def test_summary_four_quadrant_net_worth(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    """Managed / unmanaged / matured / unmapped-cash quadrants (design 5.2)."""
+    from datetime import date, timedelta
+
+    TODAY = date.today()
+    bank = await _create_account(db_client, household_headers, name="储蓄")
+    await _set_opening(db_client, household_headers, bank["id"], "1000")
+    brokerage = await _create_account(
+        db_client, household_headers, name="券商", account_type="investment"
+    )
+    cash_fund = await _create_account(db_client, household_headers, name="划款户")
+    await _set_opening(db_client, household_headers, cash_fund["id"], "20000")
+
+    managed = await _investment(
+        db_client,
+        household_headers,
+        name="在投基金",
+        account_id=brokerage["id"],
+        fund_transfer={"from_account_id": cash_fund["id"], "from_amount": "6000"},
+    )
+    await db_client.put(
+        f"/api/v1/investments/{managed['id']}/value",
+        headers=household_headers,
+        json={"current_value": "7000"},
+    )
+    unmanaged = await _investment(
+        db_client,
+        household_headers,
+        name="未托管股票",
+        investment_type="stock",
+        principal="2000",
+    )
+    await db_client.put(
+        f"/api/v1/investments/{unmanaged['id']}/value",
+        headers=household_headers,
+        json={"current_value": "2500"},
+    )
+    matured = await _investment(
+        db_client,
+        household_headers,
+        name="到期定存",
+        account_id=brokerage["id"],
+        principal="1000",
+        end_date=(TODAY - timedelta(days=1)).isoformat(),
+    )
+    await db_client.put(
+        f"/api/v1/investments/{matured['id']}/value",
+        headers=household_headers,
+        json={"current_value": "1100"},
+    )
+
+    summary = await _summary(db_client, household_headers)
+    assert summary["buckets"]["idle"] == "15000.00000000"  # bank 1000 + funding leftover 14000
+    assert summary["buckets"]["invested"] == "8500.00000000"  # 6000 + 2500
+    assert summary["buckets"]["matured"] == "1000.00000000"
+    assert summary["unrealized_pnl"] == "1100.00000000"
+    assert summary["unmapped_cash"] == "-1000.00000000"
+    # net = 1000 cash + 6000 account + 1100 floating + 2500 unmanaged
+    assert summary["net_worth"] == "24600.00000000"  # 15000 + 6000 + 1100 + 2500
+    assert len(summary["matured_investments"]) == 1
+    assert summary["matured_investments"][0]["name"] == "到期定存"
+
+    snapshot = await db_client.post("/api/v1/assets/snapshots", headers=household_headers)
+    assert snapshot.status_code == 201, snapshot.text
+    assert snapshot.json()["data"]["net_worth"] == "24600.00000000"

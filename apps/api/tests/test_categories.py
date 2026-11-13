@@ -22,12 +22,12 @@ async def test_default_categories_and_filters(
     response = await db_client.get("/api/v1/categories?page_size=100", headers=household_headers)
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["total"] == 11
+    assert data["total"] == 13
 
     income = await db_client.get(
         "/api/v1/categories?category_type=income&page_size=100", headers=household_headers
     )
-    assert income.json()["data"]["total"] == 4
+    assert income.json()["data"]["total"] == 5
 
     inactive = await db_client.get(
         "/api/v1/categories?is_active=false&page_size=100", headers=household_headers

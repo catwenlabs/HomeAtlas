@@ -53,6 +53,16 @@ def _fresh_settings() -> None:
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _clear_quote_cache() -> None:
+    """Keep the module-level quote cache out of test isolation."""
+    from app.modules.market import service as market_service
+
+    market_service.clear_cache()
+    yield
+    market_service.clear_cache()
+
+
 @pytest.fixture(scope="session")
 def test_database() -> str:
     """Drop + recreate the disposable test database and apply all migrations."""
@@ -68,6 +78,8 @@ def test_database() -> str:
     asyncio.run(_recreate())
 
     os.environ["POSTGRES_DB"] = TEST_DB_NAME
+    # CI never reaches the network: quotes come from the deterministic fake.
+    os.environ.setdefault("QUOTE_PROVIDER", "fake")
     get_settings.cache_clear()
     command.upgrade(Config(str(PROJECT_ROOT / "alembic.ini")), "head")
 
@@ -124,6 +136,9 @@ async def clean_db(db_app: FastAPI, db_client: AsyncClient) -> AsyncIterator[Non
                 "TRUNCATE TABLE system.import_rows, system.import_batches, "
                 "system.audit_logs, core.users, core.account_balances, "
                 "finance.net_worth_snapshots, finance.exchange_rates, "
+                "finance.holdings, finance.investment_transfers, "
+                "finance.investment_tag_links, finance.investment_tags, "
+                "finance.investments, "
                 "finance.transactions, finance.transfers, finance.categories, "
                 "core.accounts, core.households RESTART IDENTITY CASCADE"
             )

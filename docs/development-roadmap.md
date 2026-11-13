@@ -12,8 +12,9 @@
 | 2A | JWT 认证、首次部署初始化向导、React Web 前端 | ✅ 完成（Task 009） |
 | 2B-2 | 异步导入：NATS JetStream + Outbox + Worker | ⏸ 暂缓 |
 | 2C-1 | 汇率表、credit/透支账户、净资产快照与总览 | ✅ 完成（Task 010） |
-| 2C-2/2C-4 | 投资与标签 / Web 资产负债页 | ⬜ 待实施 |
+| 2C-2 | 投资与标签、入金/赎回闭环、持股快照与行情估值 | ✅ 完成（Task 011） |
 | 2C-3 | 贷款与负债端 | ⬜ 待实施 |
+| 2C-4 | Web：资产负债页、图表、到期提醒 | ⬜ 待实施 |
 | 2D | Grafana | ⬜ 2C 之后 |
 | 2B-1 | 数据导入同步骨架：CSV 上传、映射、预览/去重、确认生成交易 | ✅ 完成（Task 007） |
 | 2B-3 | 数据导入增强：Excel、模板下载、模糊去重、批量行修正 | ✅ 完成（Task 008） |
@@ -371,3 +372,94 @@
 - 日利息是估算口径，不产生流水；贷款利息（支出端）随 2C-3。
 - 汇率为家庭视角手工录入，无行情源与自动更新；反向取数不做精度
   二次校验（1/rate 已按 12 位 half-even 取整）。
+
+## Task 011（Phase 2C-2）已完成（2026-11-14）
+
+- 迁移 `20261114_0006_phase_2c_2`：`finance.investments`（§4.4 全列，含
+  `realized_pnl` / `pre_redeem_value`）、`finance.investment_tags`（UNIQUE
+  家庭+名称）、`finance.investment_tag_links`（复合 PK，DB 级联）、
+  `finance.investment_transfers`（§4.6：复合 PK + transfer_id 唯一）、
+  `finance.holdings`（市场+代码+数量+成本单价，UNIQUE 投资内仓位）。
+  升级/降级往返验证通过。
+- 投资模块 `app/modules/investments/`（service / flows / linkage / tags /
+  holdings / router）：
+  - **建仓**：`account_id` 可空 —— 带则为 managed（校验 investment 类型 +
+    同家庭 + 同币种，否则 422 `INVESTMENT_ACCOUNT_INVALID`），不带即
+    unmanaged 独立快照（推荐路径：股票只做登记，不进账户体系）。可选
+    `fund_transfer` 同事务入金：复用 `_resolve_terms` + 新拆的
+    `_persist_transfer`（无 commit 内核），守卫失败整笔回滚（不留投资行、
+    不留孤儿转账）；`principal += to_amount`，`current_value` 随第一笔入金
+    初始化。跨币种入金要求显式 `exchange_rate`；两侧均非本位币时从
+    `finance.exchange_rates` 取 base 汇率（缺则 400 带缺口）。
+  - **追加入金** `POST /investments/{id}/fund`、**估值唯一入口**
+    `PUT /value`（浮盈不计收支）、**PUT 收窄**（managed 的 principal /
+    account_id / currency 拒改 409 `INVESTMENT_NOT_EDITABLE`；unmanaged
+    principal 可改）、**DELETE** 仅 active 且无未冲正关联转账（409
+    `INVESTMENT_HAS_TRANSFERS`，链接行显式清理）。
+  - **赎回闭环**（C1 固定顺序）：① 衍生 pnl 流水先落投资账户（盈利→
+    「投资收益」收入 / 亏损→「投资亏损」支出，金额 |pnl|，transfer_id
+    待转账落库后回填——此刻账户余额恰等于 to_amount）；② 资金转账回
+    现金账户（守卫自然通过）；③ 置 redeemed + `realized_pnl` +
+    `current_value=0` + 留存 `pre_redeem_value`。赎回要求 managed +
+    to_account 同币种（422 `REDEEM_AMOUNT_INVALID`）；base 汇率可请求
+    覆盖，缺省查汇率表。账面断言：投资账户 −principal、现金 +to_amount、
+    收支统计 +pnl 恰一次。
+  - **到期**：`matured` 为查询期派生态（`end_date <= 今日(household tz)
+    AND status='active'`），不落库；`GET /investments?status=` 三态筛选。
+  - **冲正联动**（linkage.py，在 `reverse_transfer` 同事务最前方执行）：
+    冲正入金转账等额调减 principal（<0 或投资已 redeemed → 409
+    `TRANSFER_LINKED_TO_INVESTMENT`，提示先冲正赎回）；冲正赎回转账回滚
+    status/realized_pnl/current_value（`pre_redeem_value` 快照），衍生
+    pnl 流水随行冲正。`reverse_transfer` 衍生冲正查询泛化为全部
+    confirmed 衍生流水（原仅 EXPENSE，赎回盈利的衍生收入现在也能冲正），
+    `_reverse_fee_transaction` 泛化为 `_reverse_derived_transaction`
+    （方向按原流水翻转）。
+- 持股与行情（本次决策并入，asset-design §2.2 的暂缓项按需求提前）：
+  - `finance.holdings`：市场（SH/SZ/HK/US）+ 代码 + 数量 + 成本单价；
+    仅 stock/fund 投资可挂（422 `HOLDING_NOT_SUPPORTED`），市场币种必须
+    等于投资币种（422 `HOLDING_CURRENCY_MISMATCH`）；持仓成本
+    `Σ quantity × cost_price` 与投资 principal 并列展示作对账参考，
+    **不进净资产公式**。拆股/送股手动改数量；成本自动核算（移动加权）
+    留待未来 `finance.trades`，表结构前向兼容。
+  - `app/modules/market/`：`GET /market/quotes?symbols=SH:600519,...`
+    （MARKET:SYMBOL 格式，单次 ≤50）；Provider 抽象 + 腾讯免 key 实现
+    （SH/SZ/HK/US，GBK 解析、字段容错）+ FakeProvider（确定性哈希价，
+    CI 零出网，conftest 注入 `QUOTE_PROVIDER=fake`）；30s 内存缓存、
+    5s 超时、可选 `QUOTE_PROXY_URL`；失败 502
+    `QUOTE_PROVIDER_ERROR`（details 带失败代码清单）；行情为信息性数据
+    不落库，出网请求只携带代码。
+  - `POST /investments/{id}/refresh-value`：按全部持股拉价，`Σ 数量×现价`
+    **自动写入 current_value**（复用 value 审计路径，after 带
+    `source=quote` 与逐股 breakdown），响应返回新旧估值与逐股明细；
+    无持股 422。
+- 净资产公式完整版（assets/service.py）：`net = 现金 + Σ投资账户余额 +
+  Σ_managed 浮盈(current_value−principal) + Σ_unmanaged current_value −
+  负债`；`unrealized_pnl`、`unmapped_cash`（= 投资账户余额 − Σ_managed
+  principal，可负）落地；matured 计入净资产但移入「已到期」分桶并输出
+  `matured_investments` 列表（M9 回归）；日利息纳入投资项
+  （current_value × annual_rate / 365）；分币种 breakdown 的 invested
+  改为登记口径（managed principal + unmanaged current_value）。
+- 内置分类双通道：defaults.py 预填「投资收益」「投资亏损」（新家庭向导
+  可见，默认分类 11 → 13）；存量家庭运行时兜底（照抄 `_fee_category`
+  模式）。setup 向导行为不变（新列均可空）。
+- 审计：`investment.create/fund/update/value/tags/redeem/delete`、
+  `investment.fund_reverse/redeem_reverse`、`investment.holding.*`、
+  `investment_tag.*`；衍生 pnl 另写 `transaction.create`（带
+  investment_id 上下文）。
+- 测试：新增 `tests/test_investments.py`（16 项：建仓/入金/守卫回滚/
+  PUT 收窄/删除规则/盈亏赎回账面/校验矩阵/全链路冲正还原/到期派生/
+  标签/持股/行情刷新/缓存与 502/跨币种汇率表）+ test_assets 四象限
+  净资产回归。全量 **160 项通过，覆盖率 95.91%**；ruff / mypy strict
+  通过；迁移往返验证通过。
+
+### Phase 2C-2 已知边界
+
+- 赎回仅全额、仅同币种 to_account；跨币种赎回随需求放开。
+- 加仓/减仓/卖出与移动加权成本核算未实现（预留 `finance.trades`）；
+  手工改 holdings 数量/单价即手工修正。
+- 行情按需拉取（打开页面/点刷新），无后台定时估值；腾讯接口为非官方
+  免 key 通道，可能变动，Provider 可替换。
+- refresh-value 仅覆盖 stock/fund 投资且要求全部持股行情可得，任一
+  失败整体 502（宁可失败不写半价）。
+- 分桶 invested 为登记口径；投资账户内的未映射现金体现在
+  `unmapped_cash`（含负值诊断），不进分桶。

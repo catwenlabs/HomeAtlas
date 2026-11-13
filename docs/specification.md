@@ -780,3 +780,10 @@ PostgreSQL 数据优先放在可靠的本地 SSD 存储。备份放 Unraid，并
 | 3 | 负余额规则细化：credit 账户放行透支（§430 的 2C 承诺兑现），守卫覆盖 transactions / transfers / imports 全部校验点；credit_limit 软校验默认开启 | asset-design §5.1 |
 | 4 | 投资本金走内部转账（不得直改余额）、赎回损益衍生收支计入统计、`investment_transfers` 关联表保证冲正联动 | asset-design §4.6/§5.2 |
 | 5 | 净资产唯一口径公式与 `unmapped_cash` 诊断字段定案；快照仅限当日（不接受历史补录） | asset-design §5.2/§6.5 |
+
+## 附录 C：v1.5 修订记录（2026-11-14，Phase 2C-2 实施）
+
+| # | 修订 | 来源 |
+| -- | -- | -- |
+| 1 | §10 2C 增补持股快照表 `finance.holdings`（市场/代码/数量/成本单价，仅 stock/fund）与按需行情估值（`/market/quotes`、`refresh-value`，腾讯 Provider + Fake 离线实现，无后台定时任务）；§736 的行情采集暂缓范围相应收窄，**逐笔交易/股息/成本基准仍暂缓**（`finance.trades` 前向预留不变） | 用户需求 + [asset-design.md](asset-design.md) §15 |
+| 2 | 投资分 managed / unmanaged 两态：unmanaged 为独立登记快照（推荐股票路径，不关联账户）；fund/redeem 仅限 managed（`INVESTMENT_ACCOUNT_REQUIRED`） | asset-design §15 |

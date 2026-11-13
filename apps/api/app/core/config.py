@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
 
+    # Market quotes (Phase 2C-2). On-demand only; tests inject the fake
+    # provider so CI never reaches the network.
+    quote_provider: str = "tencent"  # tencent | fake
+    quote_timeout_seconds: float = 5.0
+    quote_proxy_url: str | None = None
+    quote_cache_ttl_seconds: float = 30.0
+
     @property
     def database_url(self) -> str:
         return (

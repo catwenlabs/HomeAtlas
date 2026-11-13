@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import AccountType
+from app.core.enums import AccountType, InvestmentStatus
 from app.core.money import quantize_money
 from app.core.pagination import Pagination, resolve_sort
 from app.core.serialization import jsonable
@@ -26,6 +26,7 @@ from app.modules.assets.models import NetWorthSnapshot
 from app.modules.audit.service import write_audit
 from app.modules.exchange_rates.service import resolve_rates_to_base
 from app.modules.households.models import Household
+from app.modules.investments.models import Investment
 
 DAYS_PER_YEAR = Decimal("365")
 
@@ -61,7 +62,7 @@ async def _compute_metrics(
     }
 
     cash: dict[str, Decimal] = defaultdict(Decimal)
-    invested: dict[str, Decimal] = defaultdict(Decimal)
+    investment_account_balances: dict[str, Decimal] = defaultdict(Decimal)
     liabilities: dict[str, Decimal] = defaultdict(Decimal)
     interest_income: dict[str, Decimal] = defaultdict(Decimal)
     inactive_count = 0
@@ -75,7 +76,7 @@ async def _compute_metrics(
         is_investment = str(account.account_type).strip() == AccountType.INVESTMENT.value
         for currency, balance in balances.items():
             if is_investment:
-                invested[currency] += balance
+                investment_account_balances[currency] += balance
             elif balance >= 0:
                 cash[currency] += balance
             else:
@@ -88,21 +89,92 @@ async def _compute_metrics(
                     own_balance * account.annual_rate / DAYS_PER_YEAR
                 )
 
-    currencies = set(cash) | set(invested) | set(liabilities) | set(interest_income)
+    # Investment side (asset-design 5.2): managed rows contribute their
+    # floating PnL on top of the investment account balance; unmanaged rows
+    # count at full current value. Matured rows stay in net worth but move
+    # to the matured bucket for display.
+    investments = list(
+        (
+            await session.scalars(
+                select(Investment).where(
+                    Investment.household_id == household.id,
+                    Investment.status != InvestmentStatus.REDEEMED.value,
+                )
+            )
+        ).all()
+    )
+    invested_bucket: dict[str, Decimal] = defaultdict(Decimal)
+    matured_bucket: dict[str, Decimal] = defaultdict(Decimal)
+    managed_pnl: dict[str, Decimal] = defaultdict(Decimal)
+    managed_principal: dict[str, Decimal] = defaultdict(Decimal)
+    unmanaged_value: dict[str, Decimal] = defaultdict(Decimal)
+    matured_list: list[dict[str, Any]] = []
+    for investment in investments:
+        currency = str(investment.currency).strip()
+        measure = investment.principal if investment.account_id else investment.current_value
+        end_date = investment.end_date
+        matured = end_date is not None and end_date <= as_of
+        if matured:
+            matured_bucket[currency] += measure
+            matured_list.append(
+                {
+                    "id": str(investment.id),
+                    "name": investment.name,
+                    "end_date": end_date.isoformat() if end_date else None,
+                    "current_value": str(investment.current_value),
+                    "currency": currency,
+                }
+            )
+        else:
+            invested_bucket[currency] += measure
+        if investment.account_id:
+            managed_pnl[currency] += investment.current_value - investment.principal
+            managed_principal[currency] += investment.principal
+        else:
+            unmanaged_value[currency] += investment.current_value
+        if investment.annual_rate is not None:
+            interest_income[currency] += (
+                investment.current_value * investment.annual_rate / DAYS_PER_YEAR
+            )
+
+    currencies = (
+        set(cash)
+        | set(investment_account_balances)
+        | set(invested_bucket)
+        | set(matured_bucket)
+        | set(managed_pnl)
+        | set(unmanaged_value)
+        | set(liabilities)
+        | set(interest_income)
+    )
     rates = await resolve_rates_to_base(session, household.id, base, currencies, as_of)
 
     total_cash = _convert(cash, rates)
-    total_invested = _convert(invested, rates)
+    total_invested_accounts = _convert(investment_account_balances, rates)
+    total_invested = _convert(invested_bucket, rates)
+    total_matured = _convert(matured_bucket, rates)
     total_liabilities = _convert(liabilities, rates)
-    net_worth = quantize_money(total_cash + total_invested - total_liabilities)
+    total_managed_pnl = _convert(managed_pnl, rates)
+    total_unmanaged = _convert(unmanaged_value, rates)
+    net_worth = quantize_money(
+        total_cash
+        + total_invested_accounts
+        + total_managed_pnl
+        + total_unmanaged
+        - total_liabilities
+    )
+    unmapped_cash = quantize_money(total_invested_accounts - _convert(managed_principal, rates))
 
     breakdown = []
     for currency in sorted(currencies):
+        bucket_measure = invested_bucket.get(currency, Decimal("0")) + matured_bucket.get(
+            currency, Decimal("0")
+        )
         breakdown.append(
             {
                 "currency": currency,
                 "cash": quantize_money(cash.get(currency, Decimal("0"))),
-                "invested": quantize_money(invested.get(currency, Decimal("0"))),
+                "invested": quantize_money(bucket_measure),
                 "liabilities": quantize_money(liabilities.get(currency, Decimal("0"))),
                 "fx_rate": rates.get(currency, Decimal("1")),
             }
@@ -112,14 +184,15 @@ async def _compute_metrics(
         "base_currency": base,
         "total_cash": total_cash,
         "total_invested": total_invested,
+        "total_matured": total_matured,
         "total_liabilities": total_liabilities,
         "net_worth": net_worth,
-        # 2C-2/2C-3 terms; fixed until investments and loans exist.
-        "unrealized_pnl": quantize_money(Decimal("0")),
-        "unmapped_cash": total_invested,
+        "unrealized_pnl": total_managed_pnl,
+        "unmapped_cash": unmapped_cash,
         "daily_interest_income": _convert(interest_income, rates),
         "daily_interest_expense": quantize_money(Decimal("0")),
         "inactive_count": inactive_count,
+        "matured_investments": matured_list,
         "currency_breakdown": breakdown,
         "fx_rates_used": rates,
     }
@@ -133,7 +206,7 @@ async def build_summary(session: AsyncSession, household: Household) -> dict[str
         "buckets": {
             "idle": metrics["total_cash"],
             "invested": metrics["total_invested"],
-            "matured": quantize_money(Decimal("0")),
+            "matured": metrics["total_matured"],
         },
         "total_liabilities": metrics["total_liabilities"],
         "unrealized_pnl": metrics["unrealized_pnl"],
@@ -141,7 +214,7 @@ async def build_summary(session: AsyncSession, household: Household) -> dict[str
         "daily_interest_income": metrics["daily_interest_income"],
         "daily_interest_expense": metrics["daily_interest_expense"],
         "inactive_count": metrics["inactive_count"],
-        "matured_investments": [],
+        "matured_investments": metrics["matured_investments"],
         "currency_breakdown": metrics["currency_breakdown"],
         "fx_rates_used": metrics["fx_rates_used"],
     }

@@ -22,6 +22,7 @@ from app.modules.categories.defaults import FINANCIAL_FEE_NAME
 from app.modules.categories.models import Category
 from app.modules.currencies.service import get_currency
 from app.modules.households.models import Household
+from app.modules.investments.linkage import apply_reversal_linkage
 from app.modules.transactions.models import Transaction
 from app.modules.transfers.models import Transfer
 from app.modules.transfers.schemas import (
@@ -330,28 +331,20 @@ async def _create_fee_transaction(
     return fee_transaction
 
 
-async def create_transfer(
+async def _persist_transfer(
     session: AsyncSession,
     household: Household,
-    payload: TransferCreate,
+    terms: TransferTerms,
+    *,
+    description: str | None,
+    occurred_at: datetime,
+    status: TransactionStatus,
 ) -> Transfer:
-    terms = await _resolve_terms(
-        session,
-        household,
-        from_account_id=payload.from_account_id,
-        to_account_id=payload.to_account_id,
-        from_amount=payload.from_amount,
-        from_currency=payload.from_currency,
-        to_amount=payload.to_amount,
-        to_currency=payload.to_currency,
-        exchange_rate=payload.exchange_rate,
-        base_exchange_rate=payload.base_exchange_rate,
-        fee=payload.fee,
-        fee_currency=payload.fee_currency,
-        fee_exchange_rate=payload.fee_exchange_rate,
-    )
-    status = TransactionStatus(payload.status)
-    occurred_at = payload.transfer_date or datetime.now(UTC)
+    """Build the transfer row (and its fee leg) WITHOUT committing.
+
+    Composers of larger flows (investment fund/redeem) call this inside
+    their own transaction so the whole business action is atomic.
+    """
     if status is TransactionStatus.CONFIRMED:
         await _ensure_transfer_funds(session, terms)
 
@@ -369,7 +362,7 @@ async def create_transfer(
         fee=terms.fee,
         fee_currency=terms.fee_currency,
         transfer_date=occurred_at,
-        description=payload.description,
+        description=description,
         status=status.value,
     )
     session.add(transfer)
@@ -391,6 +384,37 @@ async def create_transfer(
         entity_type="transfer",
         entity_id=transfer.id,
         after=after,
+    )
+    return transfer
+
+
+async def create_transfer(
+    session: AsyncSession,
+    household: Household,
+    payload: TransferCreate,
+) -> Transfer:
+    terms = await _resolve_terms(
+        session,
+        household,
+        from_account_id=payload.from_account_id,
+        to_account_id=payload.to_account_id,
+        from_amount=payload.from_amount,
+        from_currency=payload.from_currency,
+        to_amount=payload.to_amount,
+        to_currency=payload.to_currency,
+        exchange_rate=payload.exchange_rate,
+        base_exchange_rate=payload.base_exchange_rate,
+        fee=payload.fee,
+        fee_currency=payload.fee_currency,
+        fee_exchange_rate=payload.fee_exchange_rate,
+    )
+    transfer = await _persist_transfer(
+        session,
+        household,
+        terms,
+        description=payload.description,
+        occurred_at=payload.transfer_date or datetime.now(UTC),
+        status=TransactionStatus(payload.status),
     )
     await session.commit()
     await session.refresh(transfer)
@@ -546,47 +570,57 @@ async def delete_transfer(session: AsyncSession, household: Household, transfer_
     await session.commit()
 
 
-async def _reverse_fee_transaction(
+async def _reverse_derived_transaction(
     session: AsyncSession,
     household: Household,
     reversal: Transfer,
-    fee_transaction: Transaction,
+    derived: Transaction,
 ) -> Transaction:
-    fee_transaction.status = TransactionStatus.REVERSED.value
-    fee_reversal = Transaction(
+    """Reverse one transfer-derived row (fee expense or redeem PnL).
+
+    The reversal flips the direction: an expense un-posts as income and
+    vice versa, mirroring the original amounts exactly.
+    """
+    reversed_type = (
+        TransactionType.INCOME.value
+        if derived.transaction_type == TransactionType.EXPENSE.value
+        else TransactionType.EXPENSE.value
+    )
+    derived.status = TransactionStatus.REVERSED.value
+    derived_reversal = Transaction(
         household_id=household.id,
-        account_id=fee_transaction.account_id,
-        category_id=fee_transaction.category_id,
-        transaction_type=TransactionType.INCOME.value,
-        amount=fee_transaction.amount,
-        currency=str(fee_transaction.currency).strip(),
-        base_amount=fee_transaction.base_amount,
-        base_currency=str(fee_transaction.base_currency).strip(),
-        exchange_rate=fee_transaction.exchange_rate,
+        account_id=derived.account_id,
+        category_id=derived.category_id,
+        transaction_type=reversed_type,
+        amount=derived.amount,
+        currency=str(derived.currency).strip(),
+        base_amount=derived.base_amount,
+        base_currency=str(derived.base_currency).strip(),
+        exchange_rate=derived.exchange_rate,
         exchange_rate_date=reversal.transfer_date.date(),
         transaction_date=reversal.transfer_date,
-        description=f"Reversal of transfer fee {fee_transaction.id}",
+        description=f"Reversal of transfer-derived transaction {derived.id}",
         source=TransactionSource.SYSTEM.value,
         status=TransactionStatus.CONFIRMED.value,
-        reverses_transaction_id=fee_transaction.id,
+        reverses_transaction_id=derived.id,
         transfer_id=reversal.id,
     )
-    session.add(fee_reversal)
+    session.add(derived_reversal)
     await session.flush()
     write_audit(
         session,
         household_id=household.id,
         action="transaction.reverse",
         entity_type="transaction",
-        entity_id=fee_transaction.id,
-        before=_fee_audit_data(fee_transaction),
+        entity_id=derived.id,
+        before=_fee_audit_data(derived),
         after={
-            "status": fee_transaction.status,
-            "reversal_id": fee_reversal.id,
-            "reversal": _fee_audit_data(fee_reversal),
+            "status": derived.status,
+            "reversal_id": derived_reversal.id,
+            "reversal": _fee_audit_data(derived_reversal),
         },
     )
-    return fee_reversal
+    return derived_reversal
 
 
 async def reverse_transfer(
@@ -608,6 +642,10 @@ async def reverse_transfer(
             status_code=409,
             error_code="TRANSFER_NOT_REVERSIBLE",
         )
+
+    # Investment linkage runs first so a rejection (e.g. principal would go
+    # negative) aborts the reversal before any rows are written.
+    await apply_reversal_linkage(session, household, original)
 
     from_currency = str(original.to_currency).strip()
     to_currency = str(original.from_currency).strip()
@@ -650,22 +688,21 @@ async def reverse_transfer(
     session.add(reversal)
     await session.flush()
 
-    fee_transactions = list(
+    derived_transactions = list(
         (
             await session.scalars(
                 select(Transaction)
                 .where(
                     Transaction.transfer_id == original.id,
-                    Transaction.transaction_type == TransactionType.EXPENSE.value,
                     Transaction.status == TransactionStatus.CONFIRMED.value,
                 )
                 .order_by(Transaction.created_at.asc())
             )
         ).all()
     )
-    fee_reversal_ids = [
-        (await _reverse_fee_transaction(session, household, reversal, fee)).id
-        for fee in fee_transactions
+    derived_reversal_ids = [
+        (await _reverse_derived_transaction(session, household, reversal, derived)).id
+        for derived in derived_transactions
     ]
 
     after = {
@@ -673,8 +710,8 @@ async def reverse_transfer(
         "reversal_id": reversal.id,
         "reversal": _audit_data(reversal),
     }
-    if fee_reversal_ids:
-        after["fee_reversal_ids"] = fee_reversal_ids
+    if derived_reversal_ids:
+        after["derived_reversal_ids"] = derived_reversal_ids
     write_audit(
         session,
         household_id=household.id,
