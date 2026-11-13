@@ -48,6 +48,7 @@ Swagger UI：<http://127.0.0.1:8000/docs>（业务接口需要 Bearer token）�
 | Investments | `GET/POST /api/v1/investments`、`GET/PUT/DELETE /api/v1/investments/{id}`、`PUT /api/v1/investments/{id}/value`、`PUT /api/v1/investments/{id}/tags`、`POST /api/v1/investments/{id}/fund`、`POST /api/v1/investments/{id}/redeem`（建仓可带 `fund_transfer` 同事务入金） |
 | Holdings | `GET/POST /api/v1/investments/{id}/holdings`、`PUT/DELETE /api/v1/investments/{id}/holdings/{holding_id}`、`POST /api/v1/investments/{id}/refresh-value`（按行情自动估值） |
 | Tags | `GET/POST /api/v1/investment-tags`、`PUT/DELETE /api/v1/investment-tags/{id}` |
+| Loans | `GET/POST /api/v1/loans`、`GET/PUT/DELETE /api/v1/loans/{id}`、`POST /api/v1/loans/{id}/settle`（负债端与日利息自动并入净资产总览/快照） |
 | Market | `GET /api/v1/market/quotes?symbols=SH:600519,HK:00700,US:AAPL`（按需拉取，30s 缓存；`QUOTE_PROVIDER=fake` 可离线） |
 | 探针 | `GET /health`、`GET /ready`（不走 envelope） |
 

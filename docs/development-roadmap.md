@@ -13,7 +13,7 @@
 | 2B-2 | 异步导入：NATS JetStream + Outbox + Worker | ⏸ 暂缓 |
 | 2C-1 | 汇率表、credit/透支账户、净资产快照与总览 | ✅ 完成（Task 010） |
 | 2C-2 | 投资与标签、入金/赎回闭环、持股快照与行情估值 | ✅ 完成（Task 011） |
-| 2C-3 | 贷款与负债端 | ⬜ 待实施 |
+| 2C-3 | 贷款与负债端 | ✅ 完成（Task 012） |
 | 2C-4 | Web：资产负债页、图表、到期提醒 | ⬜ 待实施 |
 | 2D | Grafana | ⬜ 2C 之后 |
 | 2B-1 | 数据导入同步骨架：CSV 上传、映射、预览/去重、确认生成交易 | ✅ 完成（Task 007） |
@@ -463,3 +463,43 @@
   失败整体 502（宁可失败不写半价）。
 - 分桶 invested 为登记口径；投资账户内的未映射现金体现在
   `unmapped_cash`（含负值诊断），不进分桶。
+
+## Task 012（Phase 2C-3）已完成（2026-11-14）
+
+- 迁移 `20261114_0007_phase_2c_3`：`finance.loans`（§4.3 全列，CHECK 含
+  `principal > 0`、`due_day 1..31`、`repayment_type IN
+  ('monthly_interest','one_time')`、`0 <= remaining_principal <= principal`、
+  household+status 索引）。升级/降级往返验证通过。
+- 贷款模块 `app/modules/loans/`（`/api/v1`，Bearer）：
+  - `GET /loans?status=active|settled`（分页 + 排序白名单）、`POST /loans`、
+    `GET/PUT/DELETE /loans/{id}`、`POST /loans/{id}/settle {settled_date}`。
+  - 轻模型落地：无每期还款表；还款是普通支出流水（默认分类新增系统建议
+    「贷款还款」，双通道预填/兜底，默认分类 13 → 14）；`linked_account_id`
+    仅作扣款提示（同家庭校验，不校验币种/活跃）。
+  - `remaining_principal` 默认 = principal，登记存量贷款可显式传入较小值
+    （`<= principal` 双层校验：Pydantic 422 + DB CHECK；PUT 超出 422
+    `LOAN_REMAINING_INVALID`）；日常手动维护走 PUT。
+  - 状态机 `active → settled`（terminal、不可逆）：`settle` 允许
+    `remaining_principal > 0` 的提前结清并置 0、落 `settled_date`；settled
+    后 PUT / DELETE / 重复 settle 分别返回 409 `LOAN_NOT_EDITABLE` /
+    `LOAN_NOT_DELETABLE` / `LOAN_ALREADY_SETTLED`（对齐 §8 设计码）。
+  - 响应带派生 `daily_interest`（remaining × annual_rate / 365，估算口径
+    不产生流水）。
+- 净资产联动（assets）：active 贷款 `remaining_principal` 按币种并入
+  `total_liabilities`（净资产公式减项）；`daily_interest_expense` 从常量 0
+  变为 Σ active 贷款日利息（分币种折算）；分币种 breakdown 的 liabilities
+  含贷款；快照同步固化。多币种贷款缺汇率 → summary/快照 400 带缺口清单
+  （复用 2C-1 机制）。
+- 审计：`loan.create/update/settle/delete`。
+- 测试：新增 `tests/test_loans.py`（6 项：CRUD 与默认值、存量登记、校验
+  矩阵（零本金/超额剩余/坏还款日/坏币种/跨家庭关联账户）、settle 语义与
+  审计、净资产 + 日利息联动 + 快照、外币贷款折算与缺汇率）。全量
+  **166 项通过，覆盖率 95.80%**；ruff / mypy strict 通过。
+
+### Phase 2C-3 已知边界
+
+- 还款流水与贷款无外键关联，DELETE 仅校验 active（「无关联还款流水」不可
+  判定，按 active 门槛落地）；还款自动联动 remaining_principal 待使用
+  反馈后评估（§13.3 定案不变）。
+- `settled_date` 不做未来日期校验（KISS）。
+- 无批量导入与摊销计划表（§3 非目标）。

@@ -15,6 +15,9 @@ FINANCIAL_FEE_NAME = "金融手续费"
 INVESTMENT_INCOME_NAME = "投资收益"
 INVESTMENT_LOSS_NAME = "投资亏损"
 
+# Suggested category for loan repayment expenses (asset-design 4.3).
+LOAN_REPAYMENT_NAME = "贷款还款"
+
 
 @dataclass(frozen=True)
 class DefaultCategory:
@@ -37,5 +40,6 @@ DEFAULT_CATEGORIES: tuple[DefaultCategory, ...] = (
     DefaultCategory("其他支出", CategoryType.EXPENSE, 60, "minus-circle"),
     DefaultCategory(INVESTMENT_INCOME_NAME, CategoryType.INCOME, 950, "trending-up"),
     DefaultCategory(INVESTMENT_LOSS_NAME, CategoryType.EXPENSE, 951, "trending-down"),
+    DefaultCategory(LOAN_REPAYMENT_NAME, CategoryType.EXPENSE, 952, "landmark"),
     DefaultCategory(FINANCIAL_FEE_NAME, CategoryType.EXPENSE, 990, "receipt"),
 )

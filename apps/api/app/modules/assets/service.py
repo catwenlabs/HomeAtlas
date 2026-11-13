@@ -27,6 +27,7 @@ from app.modules.audit.service import write_audit
 from app.modules.exchange_rates.service import resolve_rates_to_base
 from app.modules.households.models import Household
 from app.modules.investments.models import Investment
+from app.modules.loans.service import active_loan_interest, active_loan_liabilities
 
 DAYS_PER_YEAR = Decimal("365")
 
@@ -137,6 +138,13 @@ async def _compute_metrics(
                 investment.current_value * investment.annual_rate / DAYS_PER_YEAR
             )
 
+    # Loan side (2C-3): active loans add their remaining principal to the
+    # liabilities and their accrued daily interest to the expense estimate.
+    loan_liabilities = await active_loan_liabilities(session, household.id)
+    for currency, amount in loan_liabilities.items():
+        liabilities[currency] += amount
+    loan_interest = await active_loan_interest(session, household.id)
+
     currencies = (
         set(cash)
         | set(investment_account_balances)
@@ -145,6 +153,7 @@ async def _compute_metrics(
         | set(managed_pnl)
         | set(unmanaged_value)
         | set(liabilities)
+        | set(loan_interest)
         | set(interest_income)
     )
     rates = await resolve_rates_to_base(session, household.id, base, currencies, as_of)
@@ -190,7 +199,7 @@ async def _compute_metrics(
         "unrealized_pnl": total_managed_pnl,
         "unmapped_cash": unmapped_cash,
         "daily_interest_income": _convert(interest_income, rates),
-        "daily_interest_expense": quantize_money(Decimal("0")),
+        "daily_interest_expense": _convert(loan_interest, rates),
         "inactive_count": inactive_count,
         "matured_investments": matured_list,
         "currency_breakdown": breakdown,

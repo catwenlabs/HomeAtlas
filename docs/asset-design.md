@@ -411,6 +411,7 @@ daily_interest_expense = Σ active 贷款 remaining_principal×annual_rate/365
 | INVESTMENT_ACCOUNT_INVALID | 422 | account_id 非投资账户/跨家庭/币种不符 |
 | REDEEM_AMOUNT_INVALID | 422 | to_amount ≤ 0 或币种不符 |
 | TAG_IN_USE / TAG_NOT_FOUND | 409/404 | |
+| LOAN_REMAINING_INVALID | 422 | PUT 时 remaining_principal > principal（实施新增） |
 | TRANSFER_LINKED_TO_INVESTMENT | 409 | 冲正入金转账会使 principal < 0 |
 | SNAPSHOT_DATE_INVALID | 422 | 补录历史日期 |
 

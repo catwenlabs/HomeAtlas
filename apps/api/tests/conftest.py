@@ -138,7 +138,7 @@ async def clean_db(db_app: FastAPI, db_client: AsyncClient) -> AsyncIterator[Non
                 "finance.net_worth_snapshots, finance.exchange_rates, "
                 "finance.holdings, finance.investment_transfers, "
                 "finance.investment_tag_links, finance.investment_tags, "
-                "finance.investments, "
+                "finance.investments, finance.loans, "
                 "finance.transactions, finance.transfers, finance.categories, "
                 "core.accounts, core.households RESTART IDENTITY CASCADE"
             )

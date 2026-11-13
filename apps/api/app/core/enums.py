@@ -57,6 +57,16 @@ class Market(StrEnum):
     US = "US"
 
 
+class LoanStatus(StrEnum):
+    ACTIVE = "active"
+    SETTLED = "settled"
+
+
+class RepaymentType(StrEnum):
+    MONTHLY_INTEREST = "monthly_interest"
+    ONE_TIME = "one_time"
+
+
 class CategoryType(StrEnum):
     INCOME = "income"
     EXPENSE = "expense"
