@@ -79,7 +79,7 @@ export interface Account {
   household_id: string;
   name: string;
   institution: string | null;
-  account_type: "bank" | "cash" | "wallet" | "other";
+  account_type: "bank" | "cash" | "wallet" | "other" | "credit" | "investment";
   currency: string;
   external_ref: string | null;
   is_active: boolean;
@@ -290,4 +290,170 @@ export interface ImportBatch {
 
 export interface ImportPreview extends ImportBatch {
   preview: ImportRow[];
+}
+
+// ---------- Phase 2C: assets, investments, loans, market ----------
+
+export interface AssetBuckets {
+  idle: string;
+  invested: string;
+  matured: string;
+}
+
+export interface CurrencyAssetLine {
+  currency: string;
+  cash: string;
+  invested: string;
+  liabilities: string;
+  fx_rate: string;
+}
+
+export interface MaturedInvestment {
+  id: string;
+  name: string;
+  end_date: string;
+  current_value: string;
+  currency: string;
+}
+
+export interface AssetsSummary {
+  base_currency: string;
+  net_worth: string;
+  buckets: AssetBuckets;
+  total_liabilities: string;
+  unrealized_pnl: string;
+  unmapped_cash: string;
+  daily_interest_income: string;
+  daily_interest_expense: string;
+  inactive_count: number;
+  matured_investments: MaturedInvestment[];
+  currency_breakdown: CurrencyAssetLine[];
+  fx_rates_used: Record<string, string>;
+}
+
+export interface NetWorthSnapshot {
+  id: string;
+  household_id: string;
+  snapshot_date: string;
+  base_currency: string;
+  total_cash: string;
+  total_invested: string;
+  total_liabilities: string;
+  net_worth: string;
+  unrealized_pnl: string;
+  unmapped_cash: string;
+  daily_interest_income: string;
+  daily_interest_expense: string;
+  currency_breakdown: CurrencyAssetLine[];
+  fx_rates_used: Record<string, string>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Investment {
+  id: string;
+  household_id: string;
+  name: string;
+  investment_type: "fixed" | "daily" | "fund" | "cash" | "stock" | "bond" | "other";
+  account_id: string | null;
+  principal: string;
+  current_value: string;
+  currency: string;
+  annual_rate: string | null;
+  start_date: string;
+  end_date: string | null;
+  liquidity: string | null;
+  status: "active" | "redeemed";
+  realized_pnl: string | null;
+  pre_redeem_value: string | null;
+  remark: string | null;
+  created_at: string;
+  updated_at: string;
+  matured: boolean;
+  tag_ids: string[];
+  holdings_cost?: string | null;
+}
+
+export interface InvestmentTag {
+  id: string;
+  household_id: string;
+  name: string;
+  color: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Holding {
+  id: string;
+  investment_id: string;
+  market: "SH" | "SZ" | "HK" | "US";
+  symbol: string;
+  quantity: string;
+  cost_price: string;
+  cost_subtotal: string | null;
+  remark: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HoldingsSummary {
+  items: Holding[];
+  holdings_cost: string;
+}
+
+export interface RefreshValueResult {
+  current_value: string;
+  previous_value: string;
+  items: {
+    market: string;
+    symbol: string;
+    name: string;
+    quantity: string;
+    price: string;
+    currency: string;
+    subtotal: string;
+  }[];
+}
+
+export interface Quote {
+  market: string;
+  symbol: string;
+  name: string;
+  price: string;
+  currency: string;
+  quoted_at: string;
+}
+
+export interface Loan {
+  id: string;
+  household_id: string;
+  name: string;
+  institution: string | null;
+  principal: string;
+  currency: string;
+  annual_rate: string;
+  start_date: string;
+  end_date: string | null;
+  due_day: number | null;
+  repayment_type: "monthly_interest" | "one_time";
+  linked_account_id: string | null;
+  remaining_principal: string;
+  status: "active" | "settled";
+  settled_date: string | null;
+  remark: string | null;
+  created_at: string;
+  updated_at: string;
+  daily_interest: string | null;
+}
+
+export interface ExchangeRate {
+  id: string;
+  household_id: string;
+  base_currency: string;
+  quote_currency: string;
+  rate: string;
+  rate_date: string;
+  source: string;
+  created_at: string;
+  updated_at: string;
 }

@@ -114,4 +114,4 @@ CI：push / PR 触发 Backend / Frontend / Container / Publish 四个 job，镜�
 
 ## 项目状态
 
-后端功能主体已完成（Phase 1 全部 + 2A 认证与 Web + 2B 导入 + 2E 转账 + 2C-1/2/3 汇率、投资、贷款与净资产）；进行中：2C-4 Web 资产负债页。完整状态见 [development-roadmap.md](docs/development-roadmap.md)。
+后端功能主体与 Web 界面已完成（Phase 1 全部、2A 认证与 Web、2B 导入、2E 转账、2C 全部——汇率、投资与持股行情估值、贷款、净资产快照与资产负债页）；剩余 2D（Grafana）与暂缓的 2B-2（异步导入）。完整状态见 [development-roadmap.md](docs/development-roadmap.md)。

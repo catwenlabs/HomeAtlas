@@ -2,10 +2,20 @@ import { api, unwrap } from "./client";
 import type {
   Account,
   AccountBalances,
+  AssetsSummary,
   Category,
   CategoryStatistics,
   Currency,
   Envelope,
+  ExchangeRate,
+  Holding,
+  HoldingsSummary,
+  Investment,
+  InvestmentTag,
+  Loan,
+  NetWorthSnapshot,
+  Quote,
+  RefreshValueResult,
   Household,
   ImportBatch,
   ImportPreview,
@@ -306,3 +316,142 @@ export const importsApi = {
     return response.data;
   },
 };
+
+// ---------- Phase 2C: assets, investments, loans, market ----------
+
+export const assetsApi = {
+  summary: () => get<AssetsSummary>("/assets/summary"),
+  snapshots: (params?: { date_from?: string; date_to?: string }) =>
+    get<Page<NetWorthSnapshot>>("/assets/snapshots", { page_size: 400, ...params }),
+  createSnapshot: () => post<NetWorthSnapshot>("/assets/snapshots"),
+};
+
+export const investmentsApi = {
+  list: (params?: {
+    page?: number;
+    page_size?: number;
+    status?: "active" | "matured" | "redeemed";
+    investment_type?: string;
+    tag_id?: string;
+    account_id?: string;
+  }) => get<Page<Investment>>("/investments", { page_size: 100, ...params }),
+  get: (id: string) => get<Investment>(`/investments/${id}`),
+  create: (payload: InvestmentInput) => post<Investment>("/investments", payload),
+  update: (id: string, payload: Partial<InvestmentUpdateInput>) =>
+    put<Investment>(`/investments/${id}`, payload),
+  remove: (id: string) => remove(`/investments/${id}`),
+  setValue: (id: string, current_value: string) =>
+    put<Investment>(`/investments/${id}/value`, { current_value }),
+  setTags: (id: string, tag_ids: string[]) =>
+    put<Investment>(`/investments/${id}/tags`, { tag_ids }),
+  fund: (id: string, payload: FundTransferInput) =>
+    post<Investment>(`/investments/${id}/fund`, { fund_transfer: payload }),
+  redeem: (
+    id: string,
+    payload: { to_account_id: string; to_amount: string; exchange_rate?: string },
+  ) => post<Investment & { redeem_transfer_id: string; realized_pnl: string }>(
+    `/investments/${id}/redeem`,
+    payload,
+  ),
+  holdings: (id: string) => get<HoldingsSummary>(`/investments/${id}/holdings`),
+  addHolding: (id: string, payload: HoldingInput) =>
+    post<Holding>(`/investments/${id}/holdings`, payload),
+  updateHolding: (
+    id: string,
+    holdingId: string,
+    payload: Partial<HoldingInput>,
+  ) => put<Holding>(`/investments/${id}/holdings/${holdingId}`, payload),
+  removeHolding: (id: string, holdingId: string) =>
+    remove(`/investments/${id}/holdings/${holdingId}`),
+  refreshValue: (id: string) => post<RefreshValueResult>(`/investments/${id}/refresh-value`),
+};
+
+export const investmentTagsApi = {
+  list: () => get<{ items: InvestmentTag[] }>("/investment-tags"),
+  create: (payload: { name: string; color?: string | null }) =>
+    post<InvestmentTag>("/investment-tags", payload),
+  remove: (id: string) => remove(`/investment-tags/${id}`),
+};
+
+export const loansApi = {
+  list: (params?: { page?: number; page_size?: number; status?: "active" | "settled" }) =>
+    get<Page<Loan>>("/loans", { page_size: 100, ...params }),
+  create: (payload: LoanInput) => post<Loan>("/loans", payload),
+  update: (id: string, payload: Partial<LoanInput>) => put<Loan>(`/loans/${id}`, payload),
+  remove: (id: string) => remove(`/loans/${id}`),
+  settle: (id: string, settled_date: string) =>
+    post<Loan>(`/loans/${id}/settle`, { settled_date }),
+};
+
+export const exchangeRatesApi = {
+  list: (params?: { base?: string; quote?: string; date_from?: string; date_to?: string }) =>
+    get<Page<ExchangeRate>>("/exchange-rates", { page_size: 100, ...params }),
+  create: (payload: {
+    base_currency: string;
+    quote_currency: string;
+    rate: string;
+    rate_date: string;
+  }) => post<ExchangeRate>("/exchange-rates", payload),
+  remove: (id: string) => remove(`/exchange-rates/${id}`),
+};
+
+export const marketApi = {
+  quotes: (symbols: string[]) =>
+    get<{ items: Quote[] }>("/market/quotes", { symbols: symbols.join(",") }),
+};
+
+export interface InvestmentInput {
+  name: string;
+  investment_type: Investment["investment_type"];
+  account_id?: string | null;
+  principal?: string;
+  current_value?: string;
+  currency: string;
+  annual_rate?: string | null;
+  start_date: string;
+  end_date?: string | null;
+  liquidity?: string | null;
+  remark?: string | null;
+  tag_ids?: string[];
+  fund_transfer?: FundTransferInput;
+}
+
+export interface InvestmentUpdateInput {
+  name?: string;
+  investment_type?: Investment["investment_type"];
+  annual_rate?: string | null;
+  start_date?: string;
+  end_date?: string | null;
+  liquidity?: string | null;
+  remark?: string | null;
+  principal?: string;
+}
+
+export interface FundTransferInput {
+  from_account_id: string;
+  from_amount: string;
+  exchange_rate?: string;
+}
+
+export interface HoldingInput {
+  market: Holding["market"];
+  symbol: string;
+  quantity: string;
+  cost_price: string;
+  remark?: string | null;
+}
+
+export interface LoanInput {
+  name: string;
+  institution?: string | null;
+  principal: string;
+  currency: string;
+  annual_rate: string;
+  start_date: string;
+  end_date?: string | null;
+  due_day?: number | null;
+  repayment_type: Loan["repayment_type"];
+  linked_account_id?: string | null;
+  remaining_principal?: string;
+  remark?: string | null;
+}

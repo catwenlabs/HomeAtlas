@@ -1,8 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowDownLeft, ArrowUpRight, Landmark, Scale, TrendingUp, Wallet } from "lucide-react";
 
-import { statisticsApi, transactionsApi } from "../api/endpoints";
+import { ApiError } from "../api/client";
+import { assetsApi, statisticsApi, transactionsApi } from "../api/endpoints";
 import type { Transaction } from "../api/types";
 import {
   Badge,
@@ -94,6 +95,8 @@ export function DashboardPage() {
           />
         </div>
       ) : null}
+
+      <NetWorthStrip base={base} />
 
       <div className="mt-6 grid gap-6 lg:grid-cols-5">
         <Card className="lg:col-span-3">
@@ -254,5 +257,70 @@ function QuickLink({ to, label }: { to: string; label: string }) {
     >
       {label}
     </Link>
+  );
+}
+
+function NetWorthStrip({ base }: { base: string }) {
+  const queryClient = useQueryClient();
+  const summary = useQuery({
+    queryKey: ["assets", "summary"],
+    queryFn: assetsApi.summary,
+    retry: false,
+  });
+  const recordSnapshot = useMutation({
+    mutationFn: assetsApi.createSnapshot,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["assets"] });
+    },
+  });
+
+  const error = summary.error;
+  if (error instanceof ApiError && error.code === "EXCHANGE_RATE_NOT_FOUND") {
+    return (
+      <Card className="mt-6 border-amber-200 bg-amber-50 p-4">
+        <p className="text-sm text-amber-800">
+          净资产暂无法折算：缺少汇率。前往{" "}
+          <Link to="/assets" className="font-medium underline">
+            资产负债 · 汇率
+          </Link>{" "}
+          补录缺失币对后即可查看。
+        </p>
+      </Card>
+    );
+  }
+  if (!summary.data) return null;
+
+  const maturedCount = summary.data.matured_investments.length;
+
+  return (
+    <Card className="mt-6 flex flex-wrap items-center gap-4 p-4">
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium text-ink/45">家庭净资产</p>
+        <p className="mt-1 text-2xl font-semibold tracking-tight text-ink">
+          {money(summary.data.net_worth, base)}
+        </p>
+        <p className="mt-1 text-xs text-ink/40">
+          闲置 {money(summary.data.buckets.idle, base)} · 理财中{" "}
+          {money(summary.data.buckets.invested, base)} · 负债 {money(summary.data.total_liabilities, base)}
+          {maturedCount > 0 ? ` · ${maturedCount} 笔已到期未赎回` : ""}
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-700 transition hover:border-slate-300 disabled:opacity-50"
+          disabled={recordSnapshot.isPending}
+          onClick={() => recordSnapshot.mutate()}
+        >
+          {recordSnapshot.isPending ? "记录中…" : "记录今日快照"}
+        </button>
+        <Link
+          to="/assets"
+          className="rounded-xl bg-primary-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-primary-700"
+        >
+          查看资产负债 →
+        </Link>
+      </div>
+    </Card>
   );
 }

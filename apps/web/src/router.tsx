@@ -10,6 +10,7 @@ import {
 import { AppShell } from "./components/AppShell";
 import { Button, Card } from "./components/ui";
 import { AccountsPage } from "./pages/AccountsPage";
+import { AssetsPage } from "./pages/AssetsPage";
 import { CategoriesPage } from "./pages/CategoriesPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ImportsPage } from "./pages/ImportsPage";
@@ -100,6 +101,12 @@ const transfersRoute = createRoute({
   component: TransfersPage,
 });
 
+const assetsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/assets",
+  component: AssetsPage,
+});
+
 const statisticsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/statistics",
@@ -127,6 +134,7 @@ const routeTree = rootRoute.addChildren([
     accountsRoute,
     categoriesRoute,
     transfersRoute,
+    assetsRoute,
     statisticsRoute,
     importsRoute,
     settingsRoute,
