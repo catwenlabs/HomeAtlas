@@ -88,6 +88,22 @@ class OpeningBalanceUpsert(BaseModel):
         return value.upper() if value is not None else None
 
 
+class AccountRepay(BaseModel):
+    """Credit-card repayment: becomes one confirmed fee-free transfer."""
+
+    from_account_id: UUID
+    amount: Annotated[Decimal, Field(gt=0)]
+    transfer_date: datetime | None = None
+    description: Annotated[str | None, Field(max_length=2000)] = None
+
+    @field_validator("amount")
+    @classmethod
+    def _finite_amount(cls, value: Decimal) -> Decimal:
+        if not value.is_finite():
+            raise ValueError("Amount must be finite")
+        return value
+
+
 class AccountBalanceSnapshotRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

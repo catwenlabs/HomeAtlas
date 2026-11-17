@@ -787,3 +787,11 @@ PostgreSQL 数据优先放在可靠的本地 SSD 存储。备份放 Unraid，并
 | -- | -- | -- |
 | 1 | §10 2C 增补持股快照表 `finance.holdings`（市场/代码/数量/成本单价，仅 stock/fund）与按需行情估值（`/market/quotes`、`refresh-value`，腾讯 Provider + Fake 离线实现，无后台定时任务）；§736 的行情采集暂缓范围相应收窄，**逐笔交易/股息/成本基准仍暂缓**（`finance.trades` 前向预留不变） | 用户需求 + [asset-design.md](asset-design.md) §15 |
 | 2 | 投资分 managed / unmanaged 两态：unmanaged 为独立登记快照（推荐股票路径，不关联账户）；fund/redeem 仅限 managed（`INVESTMENT_ACCOUNT_REQUIRED`） | asset-design §15 |
+
+## 附录 D：v1.6 修订记录（2026-11-17，信用卡还款）
+
+| # | 修订 | 来源 |
+| -- | -- | -- |
+| 1 | 新增 `POST /accounts/{id}/repay`：信用卡还款组合为转账内核上的一笔普通已确认、fee=0 转账（默认描述「信用卡还款」），无 schema 变更，冲正复用 `POST /transfers/{id}/reverse`；审计另记 `account.repay`（含还款前后余额） | 用户需求 + [asset-design.md](asset-design.md) §5.1/§16 |
+| 2 | 还款转出账户限制：与卡同币种、非 investment 类型（保护托管本金不变量）、非卡自身；新增错误码 `REPAY_TARGET_NOT_CREDIT` / `REPAY_SOURCE_SAME` / `REPAY_SOURCE_INVESTMENT` / `REPAY_CURRENCY_MISMATCH`（400）；非本位币卡自动查汇率表折算（缺失 `EXCHANGE_RATE_NOT_FOUND`） | asset-design §8/§16 |
+| 3 | Web Accounts 页信用卡卡片新增「还款」入口：弹窗展示当前欠款并预填全额（支持部分/超额还款与溢缴款提示），成功后失效 accounts/statistics/transactions/transfers 缓存 | asset-design §16 |

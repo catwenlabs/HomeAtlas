@@ -194,11 +194,19 @@ export const accountsApi = {
   ) => put<Account>(`/accounts/${id}`, payload),
   remove: (id: string) => remove(`/accounts/${id}`),
   balances: (id: string) => get<AccountBalances>(`/accounts/${id}/balances`),
+  repay: (id: string, payload: AccountRepayInput) => post<Transfer>(`/accounts/${id}/repay`, payload),
   setOpeningBalance: (
     id: string,
     payload: { amount: string; currency?: string; transaction_date?: string; description?: string },
   ) => put<Transaction>(`/accounts/${id}/opening-balance`, payload),
 };
+
+export interface AccountRepayInput {
+  from_account_id: string;
+  amount: string;
+  transfer_date?: string;
+  description?: string | null;
+}
 
 export const categoriesApi = {
   list: (params?: { category_type?: "income" | "expense"; is_active?: boolean }) =>

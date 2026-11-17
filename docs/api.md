@@ -14,6 +14,7 @@
 | Households | `GET /api/v1/households`、`GET/PUT /api/v1/households/{id}`（PUT 仅 owner） |
 | Accounts | `GET/POST /api/v1/accounts`、`GET/PUT/DELETE /api/v1/accounts/{id}` |
 | 初始余额 | `PUT /api/v1/accounts/{id}/opening-balance` |
+| 信用卡还款 | `POST /api/v1/accounts/{id}/repay`（目标须为 credit 账户；生成一笔已确认、fee=0 的同币种转账，转出账户不能是投资账户；可走 `/transfers/{id}/reverse` 冲正） |
 | 余额/流水 | `GET /api/v1/accounts/{id}/balances`、`/transactions`、`/balance-history` |
 | Currencies | `GET /api/v1/currencies`、`GET /api/v1/currencies/{code}` |
 | Categories | `GET/POST /api/v1/categories`、`GET/PUT/DELETE /api/v1/categories/{id}` |
@@ -76,6 +77,12 @@ curl -s -X PUT http://127.0.0.1:8000/api/v1/accounts/<account-id>/opening-balanc
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"amount":"100.00","currency":"USD","exchange_rate":"7.10"}'
+
+# 信用卡还款（从现金/银行卡账户一键还清；响应为生成的转账记录）
+curl -s -X POST http://127.0.0.1:8000/api/v1/accounts/<credit-card-id>/repay \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"from_account_id":"<cash-account-id>","amount":"2000.00"}'
 
 # 记一笔支出（默认 draft；传 "status":"confirmed" 可直接确认）
 curl -s -X POST http://127.0.0.1:8000/api/v1/transactions \
@@ -145,4 +152,4 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/imports/<batch-id>/confirm \
 - 普通收支必须为正数；`opening_balance` 只能通过初始余额端点写入；credit 账户允许透支（可设额度），其余账户拒绝负余额。
 - 已确认记录不可修改或删除，只能冲正（生成关联反向记录并留审计）；冲正可完整回滚转账、手续费、赎回损益。
 - CSV 导入默认限制单文件 10 MB、单批次 20,000 行（`IMPORT_MAX_FILE_MB` / `IMPORT_MAX_ROWS`）；文件落 `IMPORT_STORAGE_DIR`（默认 `/tmp/homeatlas-imports`），数据库只存路径与 SHA-256。预览会重建批次行数据，手工修正应在完成预览后进行。
-- 错误响应统一为 `{"success": false, "data": ..., "message": ..., "error_code": ...}`；`error_code` 全局枚举（如 `INSUFFICIENT_BALANCE`、`CREDIT_LIMIT_EXCEEDED`、`EXCHANGE_RATE_NOT_FOUND`），部分错误的 `data` 携带结构化上下文（如缺失币对清单）。
+- 错误响应统一为 `{"success": false, "data": ..., "message": ..., "error_code": ...}`；`error_code` 全局枚举（如 `INSUFFICIENT_BALANCE`、`CREDIT_LIMIT_EXCEEDED`、`EXCHANGE_RATE_NOT_FOUND`、`REPAY_CURRENCY_MISMATCH`），部分错误的 `data` 携带结构化上下文（如缺失币对清单）。

@@ -11,18 +11,20 @@ from app.core.dependencies import get_db
 from app.core.enums import TransactionStatus, TransactionType
 from app.core.pagination import PaginationDep, page_payload
 from app.core.responses import success_response
-from app.modules.accounts import service
+from app.modules.accounts import flows, service
 from app.modules.accounts.models import Account, AccountBalance
 from app.modules.accounts.schemas import (
     AccountBalanceSnapshotRead,
     AccountCreate,
     AccountRead,
+    AccountRepay,
     AccountUpdate,
     OpeningBalanceUpsert,
 )
 from app.modules.households.dependencies import CurrentHousehold
 from app.modules.transactions import service as transaction_service
 from app.modules.transactions.schemas import TransactionRead
+from app.modules.transfers.schemas import TransferRead
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -107,6 +109,18 @@ async def set_opening_balance(
         description=payload.description,
     )
     return success_response(transaction_service.opening_balance_response(transaction))
+
+
+@router.post("/{account_id}/repay", status_code=status.HTTP_201_CREATED)
+async def repay_account(
+    session: SessionDep,
+    household: CurrentHousehold,
+    account_id: UUID,
+    payload: AccountRepay,
+) -> dict[str, Any]:
+    """Repay a credit card with one confirmed fee-free transfer."""
+    transfer = await flows.repay_credit_card(session, household, account_id, payload)
+    return success_response(TransferRead.model_validate(transfer).model_dump(mode="json"))
 
 
 @router.get("/{account_id}/balances")

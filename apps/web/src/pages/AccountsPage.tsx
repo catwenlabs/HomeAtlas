@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CreditCard, Landmark, Pencil, Plus, Scale, Trash2, Wallet } from "lucide-react";
+import { CreditCard, HandCoins, Landmark, Pencil, Plus, Scale, Trash2, Wallet } from "lucide-react";
 import { useState } from "react";
 
 import { accountsApi, statisticsApi } from "../api/endpoints";
@@ -40,6 +40,13 @@ interface AccountForm {
   credit_limit: string;
 }
 
+interface RepayForm {
+  from_account_id: string;
+  amount: string;
+  date: string;
+  description: string;
+}
+
 export function AccountsPage() {
   const queryClient = useQueryClient();
   const household = useAuth((state) => state.household);
@@ -57,6 +64,13 @@ export function AccountsPage() {
   });
   const [balanceAccount, setBalanceAccount] = useState<Account | null>(null);
   const [balanceForm, setBalanceForm] = useState({ amount: "", currency: "", date: todayInput() });
+  const [repayAccount, setRepayAccount] = useState<Account | null>(null);
+  const [repayForm, setRepayForm] = useState<RepayForm>({
+    from_account_id: "",
+    amount: "",
+    date: todayInput(),
+    description: "",
+  });
 
   const accounts = useQuery({
     queryKey: ["accounts", true],
@@ -132,6 +146,26 @@ export function AccountsPage() {
     },
   });
 
+  const repay = useMutation({
+    mutationFn: () =>
+      accountsApi.repay(repayAccount!.id, {
+        from_account_id: repayForm.from_account_id,
+        amount: repayForm.amount,
+        transfer_date: `${repayForm.date}T12:00:00`,
+        description: repayForm.description.trim() || null,
+      }),
+    onSuccess: async () => {
+      setRepayAccount(null);
+      setMessage("信用卡还款成功");
+      // The repayment lands as a transfer row, so the transfers list must
+      // refresh too (refresh() does not cover it).
+      await queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      await queryClient.invalidateQueries({ queryKey: ["statistics"] });
+      await queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      await queryClient.invalidateQueries({ queryKey: ["transfers"] });
+    },
+  });
+
   function openCreate() {
     setEditing(null);
     setForm({
@@ -169,10 +203,48 @@ export function AccountsPage() {
     });
   }
 
-  const mutationError = create.error ?? update.error ?? remove.error ?? openingBalance.error;
+  function openRepay(account: Account) {
+    const lines = balances.data?.accounts.find((item) => item.account_id === account.id)?.balances ?? [];
+    const ownBalance =
+      lines.find((line) => line.currency === account.currency)?.book_balance ?? "0";
+    const debt = Math.max(0, -Number(ownBalance));
+    const eligible = fundingAccountsFor(account);
+    setRepayAccount(account);
+    setRepayForm({
+      from_account_id: eligible[0]?.id ?? "",
+      amount: debt > 0 ? debt.toFixed(2) : "",
+      date: todayInput(),
+      description: "",
+    });
+  }
+
+  function fundingAccountsFor(account: Account): Account[] {
+    return (accounts.data ?? []).filter(
+      (item) =>
+        item.is_active &&
+        item.account_type !== "investment" &&
+        item.id !== account.id &&
+        item.currency === account.currency,
+    );
+  }
+
+  const mutationError =
+    create.error ?? update.error ?? remove.error ?? openingBalance.error ?? repay.error;
   const balanceMap = new Map(
     (balances.data?.accounts ?? []).map((item) => [item.account_id, item.balances]),
   );
+  const repayLines = repayAccount
+    ? balances.data?.accounts.find((item) => item.account_id === repayAccount.id)?.balances ?? []
+    : [];
+  const repayDebt = Math.max(
+    0,
+    -Number(
+      repayLines.find((line) => line.currency === repayAccount?.currency)?.book_balance ?? "0",
+    ),
+  );
+  // Computed eagerly during render: must tolerate repayAccount being null
+  // (the modal is closed most of the time).
+  const repayFunding = repayAccount ? fundingAccountsFor(repayAccount) : [];
 
   return (
     <div>
@@ -275,6 +347,16 @@ export function AccountsPage() {
                 ) : null}
 
                 <div className="mt-4 flex flex-wrap gap-1.5">
+                  {account.account_type === "credit" ? (
+                    <Button
+                      variant="outline"
+                      className="h-8 px-2.5 text-xs"
+                      onClick={() => openRepay(account)}
+                    >
+                      <HandCoins className="h-3.5 w-3.5" />
+                      还款
+                    </Button>
+                  ) : null}
                   <Button variant="outline" className="h-8 px-2.5 text-xs" onClick={() => openBalance(account)}>
                     <Scale className="h-3.5 w-3.5" />
                     期初余额
@@ -457,6 +539,83 @@ export function AccountsPage() {
               onClick={() => openingBalance.mutate()}
             >
               {openingBalance.isPending ? "保存中…" : "保存"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(repayAccount)}
+        title={`信用卡还款 · ${repayAccount?.name ?? ""}`}
+        onClose={() => setRepayAccount(null)}
+      >
+        <div className="space-y-4">
+          {repayDebt > 0 ? (
+            <p className="text-xs text-ink/50">
+              当前欠款 {money(repayDebt.toFixed(2), repayAccount?.currency ?? "CNY")}
+              ，金额已预填为全额欠款，可修改为部分还款。
+            </p>
+          ) : (
+            <p className="text-xs text-ink/50">当前无欠款；继续还款将形成溢缴款（计入现金）。</p>
+          )}
+          <Field label="还款账户" hint="同币种、非投资账户">
+            <Select
+              value={repayForm.from_account_id}
+              onChange={(event) =>
+                setRepayForm((value) => ({ ...value, from_account_id: event.target.value }))
+              }
+            >
+              {repayFunding.length ? (
+                repayFunding.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}（{item.currency}）
+                  </option>
+                ))
+              ) : (
+                <option value="">无可用同币种账户</option>
+              )}
+            </Select>
+          </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="金额">
+              <Input
+                type="number"
+                step="0.01"
+                value={repayForm.amount}
+                onChange={(event) =>
+                  setRepayForm((value) => ({ ...value, amount: event.target.value }))
+                }
+              />
+            </Field>
+            <Field label="日期">
+              <Input
+                type="date"
+                value={repayForm.date}
+                onChange={(event) =>
+                  setRepayForm((value) => ({ ...value, date: event.target.value }))
+                }
+              />
+            </Field>
+          </div>
+          <Field label="备注" hint="可选">
+            <Input
+              value={repayForm.description}
+              onChange={(event) =>
+                setRepayForm((value) => ({ ...value, description: event.target.value }))
+              }
+              placeholder={'默认"信用卡还款"'}
+            />
+          </Field>
+          {repay.isError ? <ErrorBanner message={errorMessage(repay.error)} /> : null}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setRepayAccount(null)}>
+              取消
+            </Button>
+            <Button
+              disabled={!repayForm.from_account_id || !repayForm.amount || repay.isPending}
+              onClick={() => repay.mutate()}
+            >
+              {repay.isPending ? "还款中…" : "确认还款"}
             </Button>
           </div>
         </div>

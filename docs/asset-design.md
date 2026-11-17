@@ -238,6 +238,13 @@ tags：`id, household_id, name VARCHAR(50), color CHAR(7) NULL`，
   正余额（溢缴款）计入现金。现有 `/statistics/account-balances` 与 `overview` 的
   分币种合计将混入负余额 —— 分币种明细照常返回（含负值），合计处标注含 credit
   欠款；不做静默改动。
+- **还款操作（2026-11-17 增补）**：新增 `POST /accounts/{id}/repay`，把还款组合为
+  转账内核上的一笔**普通已确认、fee=0 转账**（默认描述「信用卡还款」），不加
+  schema 字段、不走特殊流水类型（与"贷款还款=普通支出"同哲学），冲正复用
+  `POST /transfers/{id}/reverse`。允许超额还款与零欠款还款（溢缴款口径见 §5.2）。
+  v1 限制：转出账户须与卡**同币种**且**非 investment 类型**（比普通转账更严格，
+  保护 §5.2 托管本金不变量）、不能是卡本身；跨币种还款走普通转账。非本位币卡
+  的本位币折算自动查汇率表（缺失即 400 `EXCHANGE_RATE_NOT_FOUND`）。
 
 ### 5.2 投资入金与赎回的会计闭环（2C-2，核心设计）
 
@@ -335,7 +342,9 @@ daily_interest_expense = Σ active 贷款 remaining_principal×annual_rate/365
 ### 6.2 账户（扩展现有端点，2C-1）
 
 `POST/PUT /accounts` 增加可选字段 `annual_rate` / `liquidity` / `credit_limit`；
-响应同步带出。负余额规则变化见 §5.1，无新端点。
+响应同步带出。负余额规则变化见 §5.1。
+`POST /accounts/{id}/repay {from_account_id, amount, transfer_date?, description?}`
+—— 信用卡还款（2026-11-17 增补，语义见 §5.1 与 §16）。
 
 ### 6.3 投资（2C-2）
 
@@ -420,6 +429,15 @@ daily_interest_expense = Σ active 贷款 remaining_principal×annual_rate/365
 | SNAPSHOT_DATE_INVALID | 422 | 补录历史日期 |
 
 复用：`ACCOUNT_INACTIVE`、`INSUFFICIENT_BALANCE`、`BASE_EXCHANGE_RATE_REQUIRED`。
+
+还款专用（2026-11-17 实施新增）：
+
+| 错误码 | HTTP | 触发 |
+| -- | -- | -- |
+| REPAY_TARGET_NOT_CREDIT | 400 | 还款目标不是 credit 账户 |
+| REPAY_SOURCE_SAME | 400 | 转出账户即该信用卡本身 |
+| REPAY_SOURCE_INVESTMENT | 400 | 转出账户是 investment 类型（保护托管本金不变量） |
+| REPAY_CURRENCY_MISMATCH | 400 | 转出账户与卡币种不一致（v1 仅同币种） |
 
 ## 9. Web UI 规划（2C-4）
 
@@ -515,3 +533,19 @@ spec §10 的 2C 范围经本设计实质调整（证券交易/股息/持仓明�
 5. 入金便利与对称回滚：入金时若 `current_value=0` 则以本金自动初始化
    （省一次 PUT /value）；冲正入金对称等额调减 `current_value`（下限 0），
    用户标注的浮盈留存，避免 principal=0 而 current_value 高挂虚增净资产。
+
+## 16. 信用卡还款端点（2026-11-17）
+
+用户记账反馈驱动：信用卡欠款录入后缺少一键还款入口（此前只能手动建转账）。
+
+1. **端点**：`POST /accounts/{id}/repay {from_account_id, amount, transfer_date?,
+   description?}`，响应为生成的 Transfer。实现位于 `accounts/flows.py`
+   `execute_repay`（组合 `resolve_terms` + `persist_transfer`，仿投资入金），
+   事务边界在 `repay_credit_card`。
+2. **无 schema 变更**：还款即普通已确认转账（fee=0、默认描述「信用卡还款」），
+   可走转账冲正；审计额外记 `account.repay`（含还款前后余额）。
+3. **限制**：转出账户同币种、非 investment、非卡自身；非本位币卡自动查
+   汇率表折算本位币（缺失 400）。错误码见 §8。
+4. **Web**：Accounts 页信用卡卡片新增「还款」按钮，弹窗预填全额欠款
+   （欠款 = −账面余额，可为 0），提示溢缴款口径；成功后失效
+   accounts/statistics/transactions/transfers 四组缓存。
