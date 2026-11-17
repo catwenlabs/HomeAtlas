@@ -18,7 +18,7 @@ import {
   Spinner,
   SuccessBanner,
 } from "../components/ui";
-import { useAccountNames, useAccounts } from "../hooks/useReference";
+import { useAccountNames, useAccounts, useCurrencies } from "../hooks/useReference";
 import { errorMessage, formatDate, money, todayInput } from "../lib/utils";
 
 const PAGE_SIZE = 20;
@@ -26,6 +26,8 @@ const PAGE_SIZE = 20;
 interface TransferForm {
   from_account_id: string;
   to_account_id: string;
+  from_currency: string;
+  to_currency: string;
   from_amount: string;
   to_amount: string;
   exchange_rate: string;
@@ -39,6 +41,7 @@ export function TransfersPage() {
   const queryClient = useQueryClient();
   const accounts = useAccounts();
   const accountNames = useAccountNames();
+  const currencies = useCurrencies();
   const [page, setPage] = useState(1);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -46,6 +49,8 @@ export function TransfersPage() {
   const [form, setForm] = useState<TransferForm>({
     from_account_id: "",
     to_account_id: "",
+    from_currency: "",
+    to_currency: "",
     from_amount: "",
     to_amount: "",
     exchange_rate: "",
@@ -75,9 +80,9 @@ export function TransfersPage() {
         from_account_id: form.from_account_id,
         to_account_id: form.to_account_id,
         from_amount: form.from_amount,
-        from_currency: from?.currency,
+        from_currency: form.from_currency || from?.currency,
         to_amount: form.to_amount,
-        to_currency: to?.currency,
+        to_currency: form.to_currency || to?.currency,
         exchange_rate: form.exchange_rate || undefined,
         fee: form.fee || "0",
         transfer_date: `${form.transfer_date}T12:00:00`,
@@ -115,6 +120,8 @@ export function TransfersPage() {
     setForm({
       from_account_id: first?.id ?? "",
       to_account_id: second?.id ?? "",
+      from_currency: first?.currency ?? "",
+      to_currency: second?.currency ?? "",
       from_amount: "",
       to_amount: "",
       exchange_rate: "",
@@ -130,6 +137,8 @@ export function TransfersPage() {
     setForm({
       from_account_id: transfer.from_account_id,
       to_account_id: transfer.to_account_id,
+      from_currency: transfer.from_currency,
+      to_currency: transfer.to_currency,
       from_amount: transfer.from_amount,
       to_amount: transfer.to_amount,
       exchange_rate: transfer.exchange_rate,
@@ -147,7 +156,9 @@ export function TransfersPage() {
         from_account_id: form.from_account_id,
         to_account_id: form.to_account_id,
         from_amount: form.from_amount,
+        from_currency: form.from_currency || undefined,
         to_amount: form.to_amount,
+        to_currency: form.to_currency || undefined,
         exchange_rate: form.exchange_rate || undefined,
         fee: form.fee || "0",
         transfer_date: `${form.transfer_date}T12:00:00`,
@@ -168,7 +179,14 @@ export function TransfersPage() {
 
   const fromAccount = accounts.data?.find((item) => item.id === form.from_account_id);
   const toAccount = accounts.data?.find((item) => item.id === form.to_account_id);
-  const sameCurrency = fromAccount?.currency === toAccount?.currency;
+  const fromCurrency = form.from_currency || fromAccount?.currency || "";
+  const toCurrency = form.to_currency || toAccount?.currency || "";
+  const sameAccount =
+    Boolean(form.from_account_id) && form.from_account_id === form.to_account_id;
+  const sameCurrency = fromCurrency === toCurrency;
+  // Same account + same currency is a no-op the backend rejects; same account
+  // with different currencies is the in-card FX exchange (购汇/结汇) case.
+  const invalidLegs = sameAccount && sameCurrency;
   const mutationError = create.error ?? update.error ?? remove.error ?? reverse.error;
   const totalPages = Math.max(1, Math.ceil((list.data?.total ?? 0) / PAGE_SIZE));
 
@@ -348,9 +366,14 @@ export function TransfersPage() {
             <Field label="转出账户">
               <Select
                 value={form.from_account_id}
-                onChange={(event) =>
-                  setForm((value) => ({ ...value, from_account_id: event.target.value }))
-                }
+                onChange={(event) => {
+                  const account = accounts.data?.find((item) => item.id === event.target.value);
+                  setForm((value) => ({
+                    ...value,
+                    from_account_id: event.target.value,
+                    from_currency: account?.currency ?? value.from_currency,
+                  }));
+                }}
               >
                 {accounts.data?.map((account) => (
                   <option key={account.id} value={account.id}>
@@ -362,9 +385,14 @@ export function TransfersPage() {
             <Field label="转入账户">
               <Select
                 value={form.to_account_id}
-                onChange={(event) =>
-                  setForm((value) => ({ ...value, to_account_id: event.target.value }))
-                }
+                onChange={(event) => {
+                  const account = accounts.data?.find((item) => item.id === event.target.value);
+                  setForm((value) => ({
+                    ...value,
+                    to_account_id: event.target.value,
+                    to_currency: account?.currency ?? value.to_currency,
+                  }));
+                }}
               >
                 {accounts.data?.map((account) => (
                   <option key={account.id} value={account.id}>
@@ -373,7 +401,35 @@ export function TransfersPage() {
                 ))}
               </Select>
             </Field>
-            <Field label={`转出金额${fromAccount ? ` (${fromAccount.currency})` : ""}`}>
+            <Field label="转出币种">
+              <Select
+                value={fromCurrency}
+                onChange={(event) =>
+                  setForm((value) => ({ ...value, from_currency: event.target.value }))
+                }
+              >
+                {currencies.data?.map((currency) => (
+                  <option key={currency.code} value={currency.code}>
+                    {currency.code} · {currency.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="转入币种">
+              <Select
+                value={toCurrency}
+                onChange={(event) =>
+                  setForm((value) => ({ ...value, to_currency: event.target.value }))
+                }
+              >
+                {currencies.data?.map((currency) => (
+                  <option key={currency.code} value={currency.code}>
+                    {currency.code} · {currency.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label={`转出金额${fromCurrency ? ` (${fromCurrency})` : ""}`}>
               <Input
                 type="number"
                 step="0.01"
@@ -383,7 +439,7 @@ export function TransfersPage() {
                 }
               />
             </Field>
-            <Field label={`转入金额${toAccount ? ` (${toAccount.currency})` : ""}`}>
+            <Field label={`转入金额${toCurrency ? ` (${toCurrency})` : ""}`}>
               <Input
                 type="number"
                 step="0.01"
@@ -443,9 +499,15 @@ export function TransfersPage() {
               onChange={(event) =>
                 setForm((value) => ({ ...value, description: event.target.value }))
               }
-              placeholder="例如：还信用卡"
+              placeholder="例如：还信用卡、卡内购汇"
             />
           </Field>
+
+          {invalidLegs ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-800">
+              同一账户的两个币种相同无法转账；同账户换汇请把转出/转入币种选成不同币种（购汇/结汇）。
+            </div>
+          ) : null}
 
           {create.isError || update.isError ? (
             <ErrorBanner message={errorMessage(create.error ?? update.error)} />
@@ -465,7 +527,7 @@ export function TransfersPage() {
               disabled={
                 !form.from_account_id ||
                 !form.to_account_id ||
-                form.from_account_id === form.to_account_id ||
+                invalidLegs ||
                 !form.from_amount ||
                 !form.to_amount ||
                 create.isPending ||

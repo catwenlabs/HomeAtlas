@@ -31,6 +31,7 @@ interface FormState {
   transaction_type: "income" | "expense";
   amount: string;
   currency: string;
+  exchange_rate: string;
   transaction_date: string;
   description: string;
   status: "draft" | "confirmed";
@@ -43,6 +44,7 @@ function emptyForm(accountId = "", currency = "CNY"): FormState {
     transaction_type: "expense",
     amount: "",
     currency,
+    exchange_rate: "",
     transaction_date: todayInput(),
     description: "",
     status: "confirmed",
@@ -115,6 +117,10 @@ export function TransactionsPage() {
         transaction_type: payload.transaction_type,
         amount: payload.amount,
         currency: payload.currency,
+        exchange_rate:
+          payload.currency !== (household?.base_currency ?? "CNY")
+            ? payload.exchange_rate || undefined
+            : undefined,
         transaction_date: toIso(payload.transaction_date),
         description: payload.description || null,
         status: payload.status,
@@ -144,6 +150,10 @@ export function TransactionsPage() {
               transaction_type: payload.transaction_type,
               amount: payload.amount,
               currency: payload.currency,
+              exchange_rate:
+                payload.currency !== (household?.base_currency ?? "CNY")
+                  ? payload.exchange_rate || undefined
+                  : undefined,
               transaction_date: toIso(payload.transaction_date),
               description: payload.description || null,
               status: payload.status,
@@ -197,6 +207,10 @@ export function TransactionsPage() {
       transaction_type: transaction.transaction_type === "income" ? "income" : "expense",
       amount: transaction.amount,
       currency: transaction.currency,
+      exchange_rate:
+        transaction.exchange_rate !== "1" && transaction.exchange_rate !== "1.00000000"
+          ? transaction.exchange_rate
+          : "",
       transaction_date: transaction.transaction_date.slice(0, 10),
       description: transaction.description ?? "",
       status: transaction.status === "draft" ? "draft" : "confirmed",
@@ -206,6 +220,9 @@ export function TransactionsPage() {
 
   const mutationError = create.error ?? update.error ?? remove.error ?? reverse.error;
   const totalPages = Math.max(1, Math.ceil((list.data?.total ?? 0) / PAGE_SIZE));
+  const baseCurrency = household?.base_currency ?? "CNY";
+  const nonBaseCurrency = form.currency !== baseCurrency;
+  const exchangeRateMissing = nonBaseCurrency && !form.exchange_rate;
   const formCategories = (categories.data ?? []).filter(
     (category) => category.category_type === form.transaction_type && category.is_active,
   );
@@ -576,7 +593,7 @@ export function TransactionsPage() {
                 onChange={(event) => setForm((value) => ({ ...value, amount: event.target.value }))}
               />
             </Field>
-            <Field label="币种">
+            <Field label="币种" hint={nonBaseCurrency ? "非本位币记账需填汇率" : undefined}>
               <Select
                 value={form.currency}
                 disabled={editingConfirmed}
@@ -589,6 +606,20 @@ export function TransactionsPage() {
                 ))}
               </Select>
             </Field>
+            {nonBaseCurrency ? (
+              <Field label="汇率" hint={`${form.currency} 兑 ${baseCurrency}，必填`}>
+                <Input
+                  type="number"
+                  step="0.000001"
+                  value={form.exchange_rate}
+                  disabled={editingConfirmed}
+                  onChange={(event) =>
+                    setForm((value) => ({ ...value, exchange_rate: event.target.value }))
+                  }
+                  placeholder="例如 7.2"
+                />
+              </Field>
+            ) : null}
             <Field label="分类">
               <Select
                 value={form.category_id}
@@ -655,7 +686,13 @@ export function TransactionsPage() {
               取消
             </Button>
             <Button
-              disabled={!form.account_id || !form.amount || create.isPending || update.isPending}
+              disabled={
+                !form.account_id ||
+                !form.amount ||
+                exchangeRateMissing ||
+                create.isPending ||
+                update.isPending
+              }
               onClick={() => {
                 if (editing) update.mutate({ transaction: editing, payload: form });
                 else create.mutate(form);
