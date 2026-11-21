@@ -190,14 +190,19 @@ function InvestmentRow({
   const [valueDraft, setValueDraft] = useState<string>("");
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const detail = useQuery({
-    queryKey: ["investments", "detail", investment.id],
-    queryFn: () => investmentsApi.get(investment.id),
-    enabled: expanded,
-  });
   const holdings = useQuery({
     queryKey: ["investments", "holdings", investment.id],
     queryFn: () => investmentsApi.holdings(investment.id),
+    enabled: expanded && (investment.investment_type === "stock" || investment.investment_type === "fund"),
+  });
+  const positions = useQuery({
+    queryKey: ["investments", "positions", investment.id],
+    queryFn: () => investmentsApi.positions(investment.id),
+    enabled: expanded && (investment.investment_type === "stock" || investment.investment_type === "fund"),
+  });
+  const tradesList = useQuery({
+    queryKey: ["investments", "trades", investment.id],
+    queryFn: () => investmentsApi.trades(investment.id),
     enabled: expanded && (investment.investment_type === "stock" || investment.investment_type === "fund"),
   });
 
@@ -423,7 +428,6 @@ function InvestmentRow({
                       <th className="py-2 pr-4">市值</th>
                       <th className="py-2 pr-4">浮动盈亏</th>
                       <th className="py-2 pr-4">盈亏率</th>
-                      <th className="py-2" />
                     </tr>
                   </thead>
                   <tbody>
@@ -474,34 +478,36 @@ function InvestmentRow({
                               ? "—"
                               : signedPercent(pnlPercent(marketValue as number, cost))}
                           </td>
-                          <td className="py-2 text-right">
-                            <button
-                              type="button"
-                              className="text-xs text-slate-400 transition hover:text-red-600"
-                              onClick={() => {
-                                if (window.confirm(`移除持股 ${holding.symbol}？`)) {
-                                  investmentsApi
-                                    .removeHolding(investment.id, holding.id)
-                                    .then(onMutated)
-                                    .catch((error) => setActionError(errorMessage(error)));
-                                }
-                              }}
-                            >
-                              移除
-                            </button>
-                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
               </div>
-              <HoldingForm investmentId={investment.id} onSaved={onMutated} />
             </div>
           ) : null}
 
-          {detail.data?.holdings_cost && (holdings.data?.items.length ?? 0) === 0 ? (
-            <p className="mt-3 text-xs text-slate-400">此投资还没有持股记录。</p>
+          {(positions.data?.items ?? []).some((p) => p.closed) ? (
+            <p className="mt-2 text-xs text-slate-500">
+              已清仓：
+              {(positions.data?.items ?? [])
+                .filter((p) => p.closed)
+                .map((p) => (
+                  <span key={`${p.market}:${p.symbol}`} className="mr-3">
+                    {p.symbol}{" "}
+                    <span className={pnlClass(Number(p.realized_pnl))}>
+                      {signedAmount(Number(p.realized_pnl))}
+                    </span>
+                  </span>
+                ))}
+            </p>
+          ) : null}
+
+          <TradeForm investmentId={investment.id} onSaved={onMutated} />
+
+          {(holdings.data?.items.length ?? 0) === 0 &&
+          (tradesList.data?.items.length ?? 0) === 0 ? (
+            <p className="mt-2 text-xs text-slate-400">此投资还没有成交记录。</p>
           ) : null}
         </div>
       ) : null}
@@ -512,80 +518,177 @@ function InvestmentRow({
   );
 }
 
-function HoldingForm({ investmentId, onSaved }: { investmentId: string; onSaved: () => void }) {
+function TradeForm({ investmentId, onSaved }: { investmentId: string; onSaved: () => void }) {
   const [error, setError] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const tradesList = useQuery({
+    queryKey: ["investments", "trades", investmentId],
+    queryFn: () => investmentsApi.trades(investmentId),
+    enabled: showHistory,
+  });
   return (
-    <form
-      className="mt-3 flex flex-wrap items-end gap-2"
-      onSubmit={(event) => {
-        event.preventDefault();
-        setError(null);
-        const form = event.currentTarget;
-        const data = new FormData(form);
-        investmentsApi
-          .addHolding(investmentId, {
-            market: String(data.get("market") ?? "SH") as "SH",
-            symbol: String(data.get("symbol") ?? "").toUpperCase(),
-            quantity: String(data.get("quantity") ?? ""),
-            cost_price: String(data.get("cost_price") ?? ""),
-          })
-          .then(() => {
-            form.reset();
-            onSaved();
-          })
-          .catch((err) => setError(err instanceof ApiError ? err.message : "添加失败"));
-      }}
-    >
-      <label className="text-xs font-medium text-slate-600">
-        市场
-        <select
-          name="market"
-          className="mt-1 block rounded-xl border border-slate-200 px-2.5 py-2 text-sm"
-          defaultValue="SH"
-        >
-          <option value="SH">沪 SH</option>
-          <option value="SZ">深 SZ</option>
-          <option value="HK">港 HK</option>
-          <option value="US">美 US</option>
-        </select>
-      </label>
-      <label className="text-xs font-medium text-slate-600">
-        代码
-        <input
-          name="symbol"
-          required
-          maxLength={20}
-          placeholder="600519"
-          className="mt-1 block w-28 rounded-xl border border-slate-200 px-3 py-2 text-sm"
-        />
-      </label>
-      <label className="text-xs font-medium text-slate-600">
-        数量
-        <input
-          name="quantity"
-          required
-          inputMode="decimal"
-          placeholder="100"
-          className="mt-1 block w-24 rounded-xl border border-slate-200 px-3 py-2 text-sm"
-        />
-      </label>
-      <label className="text-xs font-medium text-slate-600">
-        成本单价
-        <input
-          name="cost_price"
-          required
-          inputMode="decimal"
-          placeholder="1700"
-          className="mt-1 block w-28 rounded-xl border border-slate-200 px-3 py-2 text-sm"
-        />
-      </label>
-      <button
-        type="submit"
-        className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-700 transition hover:border-slate-300"
+    <div className="mt-3">
+      <form
+        className="flex flex-wrap items-end gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setError(null);
+          const form = event.currentTarget;
+          const data = new FormData(form);
+          const tradeDate = String(data.get("trade_date") ?? "").trim();
+          const fee = String(data.get("fee") ?? "").trim();
+          investmentsApi
+            .addTrade(investmentId, {
+              side: String(data.get("side") ?? "buy") as "buy",
+              market: String(data.get("market") ?? "SH") as "SH",
+              symbol: String(data.get("symbol") ?? "").toUpperCase(),
+              quantity: String(data.get("quantity") ?? ""),
+              price: String(data.get("price") ?? ""),
+              ...(fee ? { fee } : {}),
+              ...(tradeDate ? { trade_date: tradeDate } : {}),
+            })
+            .then(() => {
+              form.reset();
+              onSaved();
+            })
+            .catch((err) => setError(err instanceof ApiError ? err.message : "记录失败"));
+        }}
       >
-        添加持股
-      </button>
-      {error ? <span className="text-xs text-red-600">{error}</span> : null}
-    </form>
+        <label className="text-xs font-medium text-slate-600">
+          方向
+          <select
+            name="side"
+            className="mt-1 block rounded-xl border border-slate-200 px-2.5 py-2 text-sm"
+            defaultValue="buy"
+          >
+            <option value="buy">买入</option>
+            <option value="sell">卖出</option>
+          </select>
+        </label>
+        <label className="text-xs font-medium text-slate-600">
+          市场
+          <select
+            name="market"
+            className="mt-1 block rounded-xl border border-slate-200 px-2.5 py-2 text-sm"
+            defaultValue="SH"
+          >
+            <option value="SH">沪 SH</option>
+            <option value="SZ">深 SZ</option>
+            <option value="HK">港 HK</option>
+            <option value="US">美 US</option>
+          </select>
+        </label>
+        <label className="text-xs font-medium text-slate-600">
+          代码
+          <input
+            name="symbol"
+            required
+            maxLength={20}
+            placeholder="600519"
+            className="mt-1 block w-28 rounded-xl border border-slate-200 px-3 py-2 text-sm"
+          />
+        </label>
+        <label className="text-xs font-medium text-slate-600">
+          数量
+          <input
+            name="quantity"
+            required
+            inputMode="decimal"
+            placeholder="100"
+            className="mt-1 block w-24 rounded-xl border border-slate-200 px-3 py-2 text-sm"
+          />
+        </label>
+        <label className="text-xs font-medium text-slate-600">
+          成交价
+          <input
+            name="price"
+            required
+            inputMode="decimal"
+            placeholder="1700"
+            className="mt-1 block w-28 rounded-xl border border-slate-200 px-3 py-2 text-sm"
+          />
+        </label>
+        <label className="text-xs font-medium text-slate-600">
+          费用
+          <input
+            name="fee"
+            inputMode="decimal"
+            placeholder="0"
+            className="mt-1 block w-20 rounded-xl border border-slate-200 px-3 py-2 text-sm"
+          />
+        </label>
+        <label className="text-xs font-medium text-slate-600">
+          日期
+          <input
+            name="trade_date"
+            type="date"
+            className="mt-1 block rounded-xl border border-slate-200 px-3 py-2 text-sm"
+          />
+        </label>
+        <button
+          type="submit"
+          className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-700 transition hover:border-slate-300"
+        >
+          记录成交
+        </button>
+        <button
+          type="button"
+          className="text-xs text-slate-400 transition hover:text-slate-600"
+          onClick={() => setShowHistory((v) => !v)}
+        >
+          {showHistory ? "收起成交记录" : "成交记录"}
+        </button>
+        {error ? <span className="text-xs text-red-600">{error}</span> : null}
+      </form>
+      {showHistory ? (
+        tradesList.isLoading ? (
+          <Spinner label="加载成交记录…" />
+        ) : (tradesList.data?.items.length ?? 0) === 0 ? (
+          <p className="mt-2 text-xs text-slate-400">暂无成交记录。</p>
+        ) : (
+          <ul className="mt-2 space-y-1 text-xs text-slate-600">
+            {(tradesList.data?.items ?? []).map((trade) => (
+              <li key={trade.id} className="flex items-center gap-2">
+                <span>{trade.trade_date}</span>
+                <span
+                  className={cn(
+                    "rounded px-1.5 py-0.5 font-medium",
+                    trade.side === "buy"
+                      ? "bg-red-50 text-red-600"
+                      : "bg-emerald-50 text-emerald-600",
+                  )}
+                >
+                  {trade.side === "buy" ? "买入" : "卖出"}
+                </span>
+                <span className="font-mono text-slate-800">{trade.symbol}</span>
+                <span>
+                  {Number(trade.quantity).toLocaleString()} @ {amount(trade.price)}
+                  {Number(trade.fee) > 0 ? ` · 费用 ${amount(trade.fee)}` : ""}
+                </span>
+                {trade.source !== "manual" ? (
+                  <span className="rounded bg-slate-100 px-1 text-[10px] text-slate-400">
+                    {trade.source}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  className="ml-auto text-slate-300 transition hover:text-red-600"
+                  onClick={() => {
+                    if (window.confirm(`删除这笔 ${trade.symbol} 成交？删除后持仓将重新计算。`)) {
+                      investmentsApi
+                        .removeTrade(investmentId, trade.id)
+                        .then(onSaved)
+                        .catch((err) => setError(err instanceof ApiError ? err.message : "删除失败"));
+                    }
+                  }}
+                >
+                  删除
+                </button>
+              </li>
+            ))}
+          </ul>
+        )
+      ) : null}
+    </div>
   );
 }

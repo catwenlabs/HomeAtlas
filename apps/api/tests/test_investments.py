@@ -691,62 +691,128 @@ async def test_tags_crud_and_filters(
     assert removed.status_code == 200
 
 
-async def test_holdings_crud_and_validations(
+async def test_trades_ledger_and_validations(
     db_client: AsyncClient, household_headers: dict[str, str]
 ):
     stock = await _investment(db_client, household_headers, name="A股持仓", investment_type="stock")
-    created = await db_client.post(
-        f"/api/v1/investments/{stock['id']}/holdings",
-        headers=household_headers,
-        json={"market": "SH", "symbol": "600519", "quantity": 100, "cost_price": "1700"},
-    )
-    assert created.status_code == 201, created.text
-    assert created.json()["data"]["cost_subtotal"] == "170000.00000000"
 
-    second = await db_client.post(
-        f"/api/v1/investments/{stock['id']}/holdings",
+    # Buy 100 @ 1700 then add 200 @ 10 on another symbol.
+    buy1 = await db_client.post(
+        f"/api/v1/investments/{stock['id']}/trades",
         headers=household_headers,
-        json={"market": "SZ", "symbol": "000001", "quantity": 200, "cost_price": "10"},
+        json={"side": "buy", "market": "SH", "symbol": "600519", "quantity": 100, "price": "1700"},
     )
-    assert second.status_code == 201
+    assert buy1.status_code == 201, buy1.text
+    buy2 = await db_client.post(
+        f"/api/v1/investments/{stock['id']}/trades",
+        headers=household_headers,
+        json={
+            "side": "buy",
+            "market": "SZ",
+            "symbol": "000001",
+            "quantity": 200,
+            "price": "10",
+            "fee": "5",
+            "trade_date": "2026-01-02",
+        },
+    )
+    assert buy2.status_code == 201, buy2.text
 
-    listing = await db_client.get(
+    holdings = await db_client.get(
         f"/api/v1/investments/{stock['id']}/holdings", headers=household_headers
     )
-    assert listing.json()["data"]["holdings_cost"] == "172000.00000000"
+    assert holdings.json()["data"]["holdings_cost"] == "172005.00000000"
+    items = {item["symbol"]: item for item in holdings.json()["data"]["items"]}
+    assert items["600519"]["quantity"] == "100.00"
+    assert items["600519"]["cost_price"] == "1700.00000000"
+    assert items["000001"]["quantity"] == "200.00"
+    assert items["000001"]["cost_price"] == "10.02500000"  # (200*10+5)/200
 
-    duplicate = await db_client.post(
-        f"/api/v1/investments/{stock['id']}/holdings",
+    # Cannot sell more than the position.
+    oversell = await db_client.post(
+        f"/api/v1/investments/{stock['id']}/trades",
         headers=household_headers,
-        json={"market": "SH", "symbol": "600519", "quantity": 1, "cost_price": "1"},
+        json={"side": "sell", "market": "SH", "symbol": "600519", "quantity": 101, "price": "2000"},
     )
-    assert duplicate.status_code == 409
-    assert duplicate.json()["error_code"] == "HOLDING_DUPLICATE"
+    assert oversell.status_code == 422
+    assert oversell.json()["error_code"] == "TRADE_INSUFFICIENT_POSITION"
 
-    currency_mismatch = await db_client.post(
-        f"/api/v1/investments/{stock['id']}/holdings",
+    # Partial sell: weighted-average cost is kept, realized PnL is derived.
+    sell1 = await db_client.post(
+        f"/api/v1/investments/{stock['id']}/trades",
         headers=household_headers,
-        json={"market": "US", "symbol": "AAPL", "quantity": 1, "cost_price": "200"},
+        json={"side": "sell", "market": "SH", "symbol": "600519", "quantity": 50, "price": "2000"},
     )
-    assert currency_mismatch.status_code == 422
-    assert currency_mismatch.json()["error_code"] == "HOLDING_CURRENCY_MISMATCH"
+    assert sell1.status_code == 201, sell1.text
+    positions = await db_client.get(
+        f"/api/v1/investments/{stock['id']}/positions", headers=household_headers
+    )
+    by_symbol = {item["symbol"]: item for item in positions.json()["data"]["items"]}
+    assert by_symbol["600519"]["quantity"] == "50.00"
+    assert by_symbol["600519"]["cost_price"] == "1700.00000000"
+    assert by_symbol["600519"]["realized_pnl"] == "15000.00000000"  # (2000-1700)*50
+    assert by_symbol["600519"]["closed"] is False
+
+    # Currency mismatch and unsupported investment type.
+    mismatch = await db_client.post(
+        f"/api/v1/investments/{stock['id']}/trades",
+        headers=household_headers,
+        json={"side": "buy", "market": "US", "symbol": "AAPL", "quantity": 1, "price": "200"},
+    )
+    assert mismatch.status_code == 422
+    assert mismatch.json()["error_code"] == "HOLDING_CURRENCY_MISMATCH"
 
     fixed = await _investment(db_client, household_headers, name="定期", investment_type="fixed")
     unsupported = await db_client.post(
-        f"/api/v1/investments/{fixed['id']}/holdings",
+        f"/api/v1/investments/{fixed['id']}/trades",
         headers=household_headers,
-        json={"market": "SH", "symbol": "600519", "quantity": 1, "cost_price": "1"},
+        json={"side": "buy", "market": "SH", "symbol": "600519", "quantity": 1, "price": "1"},
     )
     assert unsupported.status_code == 422
-    assert unsupported.json()["error_code"] == "HOLDING_NOT_SUPPORTED"
+    assert unsupported.json()["error_code"] == "TRADE_NOT_SUPPORTED"
 
-    updated = await db_client.put(
-        f"/api/v1/investments/{stock['id']}/holdings/{created.json()['data']['id']}",
+    # Sell to exactly zero: the position closes and leaves the holdings view.
+    sell2 = await db_client.post(
+        f"/api/v1/investments/{stock['id']}/trades",
         headers=household_headers,
-        json={"quantity": 120, "cost_price": "1680"},
+        json={"side": "sell", "market": "SH", "symbol": "600519", "quantity": 50, "price": "1800"},
     )
-    assert updated.status_code == 200
-    assert updated.json()["data"]["cost_subtotal"] == "201600.00000000"
+    assert sell2.status_code == 201
+    holdings = await db_client.get(
+        f"/api/v1/investments/{stock['id']}/holdings", headers=household_headers
+    )
+    symbols = [item["symbol"] for item in holdings.json()["data"]["items"]]
+    assert "600519" not in symbols
+    assert "000001" in symbols
+
+    positions = await db_client.get(
+        f"/api/v1/investments/{stock['id']}/positions", headers=household_headers
+    )
+    closed = {
+        item["symbol"]: item
+        for item in positions.json()["data"]["items"]
+        if item["symbol"] == "600519"
+    }["600519"]
+    assert closed["closed"] is True
+    assert closed["quantity"] == "0.00"
+    assert closed["realized_pnl"] == "20000.00000000"  # 15000 + (1800-1700)*50
+
+    # Deleting a trade recomputes the ledger view.
+    deleted = await db_client.delete(
+        f"/api/v1/investments/{stock['id']}/trades/{sell2.json()['data']['id']}",
+        headers=household_headers,
+    )
+    assert deleted.status_code == 200
+    holdings = await db_client.get(
+        f"/api/v1/investments/{stock['id']}/holdings", headers=household_headers
+    )
+    items = {item["symbol"]: item for item in holdings.json()["data"]["items"]}
+    assert items["600519"]["quantity"] == "50.00"
+
+    trades_list = await db_client.get(
+        f"/api/v1/investments/{stock['id']}/trades", headers=household_headers
+    )
+    assert len(trades_list.json()["data"]["items"]) == 3
 
 
 async def test_market_quotes_and_refresh_value(
@@ -772,11 +838,11 @@ async def test_market_quotes_and_refresh_value(
         principal="0",
     )
     for payload in (
-        {"market": "SH", "symbol": "600519", "quantity": 100, "cost_price": "1700"},
-        {"market": "SZ", "symbol": "000001", "quantity": 200, "cost_price": "10"},
+        {"side": "buy", "market": "SH", "symbol": "600519", "quantity": 100, "price": "1700"},
+        {"side": "buy", "market": "SZ", "symbol": "000001", "quantity": 200, "price": "10"},
     ):
         response = await db_client.post(
-            f"/api/v1/investments/{stock['id']}/holdings",
+            f"/api/v1/investments/{stock['id']}/trades",
             headers=household_headers,
             json=payload,
         )

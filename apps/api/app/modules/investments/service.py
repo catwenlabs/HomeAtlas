@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import AccountType, InvestmentStatus, TransactionStatus
 from app.core.exceptions import AppError, NotFoundError
-from app.core.money import quantize_money
 from app.core.pagination import Pagination, resolve_sort
 from app.modules.accounts.models import Account
 from app.modules.accounts.service import get_account
@@ -21,7 +20,6 @@ from app.modules.households.models import Household
 from app.modules.households.service import household_today
 from app.modules.investments import flows
 from app.modules.investments.models import (
-    Holding,
     Investment,
     InvestmentTag,
     InvestmentTagLink,
@@ -481,12 +479,15 @@ async def list_investments(
 
 
 async def holdings_cost(session: AsyncSession, investment_id: UUID) -> Decimal:
-    total = await session.scalar(
-        select(func.sum(Holding.quantity * Holding.cost_price)).where(
-            Holding.investment_id == investment_id
-        )
-    )
-    return quantize_money(total or Decimal("0"))
+    """Open-position cost, derived from the trade ledger (not stored rows)."""
+    from app.modules.investments import trades as trade_service  # avoid import cycle
+    from app.modules.investments.models import Investment as InvestmentModel
+
+    investment = await session.get(InvestmentModel, investment_id)
+    if investment is None:
+        return Decimal("0")
+    positions = await trade_service.positions(session, investment)
+    return trade_service.total_cost([p for p in positions if not p["closed"]])
 
 
 async def tag_ids_for(session: AsyncSession, investment_ids: list[UUID]) -> dict[UUID, list[UUID]]:

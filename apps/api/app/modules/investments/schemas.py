@@ -2,6 +2,7 @@
 
 from datetime import date, datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Annotated
 from uuid import UUID
 
@@ -118,6 +119,40 @@ class HoldingCreate(BaseModel):
     quantity: PositiveAmount
     cost_price: Amount
     remark: Annotated[str | None, Field(max_length=500)] = None
+
+
+class TradeSide(StrEnum):
+    BUY = "buy"
+    SELL = "sell"
+
+
+class TradeCreate(BaseModel):
+    side: TradeSide
+    market: Market
+    symbol: Annotated[str, Field(min_length=1, max_length=20)]
+    quantity: PositiveAmount
+    price: PositiveAmount
+    fee: Amount = Decimal("0")
+    trade_date: date | None = None  # defaults to today in the service layer
+    source: Annotated[str, Field(max_length=20)] = "manual"
+    remark: Annotated[str | None, Field(max_length=500)] = None
+
+
+class TradeRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    investment_id: UUID
+    market: str
+    symbol: str
+    side: str
+    quantity: Decimal
+    price: Decimal
+    fee: Decimal
+    trade_date: date
+    source: str
+    remark: str | None
+    created_at: datetime
 
 
 class HoldingUpdate(BaseModel):

@@ -404,6 +404,54 @@ export interface HoldingsSummary {
   holdings_cost: string;
 }
 
+export type TradeSide = "buy" | "sell";
+
+export interface Trade {
+  id: string;
+  investment_id: string;
+  market: Holding["market"];
+  symbol: string;
+  side: TradeSide;
+  quantity: string;
+  price: string;
+  fee: string;
+  trade_date: string;
+  source: string;
+  remark: string | null;
+  created_at: string;
+}
+
+export interface TradeInput {
+  side: TradeSide;
+  market: Holding["market"];
+  symbol: string;
+  quantity: string;
+  price: string;
+  fee?: string;
+  trade_date?: string;
+  remark?: string | null;
+}
+
+export interface TradesSummary {
+  items: Trade[];
+}
+
+export interface Position {
+  market: Holding["market"];
+  symbol: string;
+  quantity: string;
+  cost_price: string;
+  cost_subtotal: string;
+  realized_pnl: string;
+  closed: boolean;
+  trade_count: number;
+  remark: string | null;
+}
+
+export interface PositionsSummary {
+  items: Position[];
+}
+
 export interface RefreshValueResult {
   current_value: string;
   previous_value: string;

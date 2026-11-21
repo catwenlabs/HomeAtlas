@@ -1,4 +1,4 @@
-"""Investment, tag, holding, and quote-valuation endpoints (asset-design 6.3)."""
+"""Investment, tag, trade-ledger, and quote-valuation endpoints (asset-design 6.3)."""
 
 import uuid
 from typing import Annotated, Any
@@ -11,12 +11,10 @@ from app.core.pagination import PaginationDep, page_payload
 from app.core.responses import success_response
 from app.modules.households.dependencies import CurrentHousehold
 from app.modules.households.service import household_today
-from app.modules.investments import holdings, service, tags
+from app.modules.investments import holdings, service, tags, trades
 from app.modules.investments.models import Investment
 from app.modules.investments.schemas import (
-    HoldingCreate,
     HoldingRead,
-    HoldingUpdate,
     InvestmentCreate,
     InvestmentFund,
     InvestmentRead,
@@ -27,6 +25,8 @@ from app.modules.investments.schemas import (
     TagCreate,
     TagRead,
     TagUpdate,
+    TradeCreate,
+    TradeRead,
 )
 
 router = APIRouter(tags=["investments"])
@@ -34,10 +34,14 @@ router = APIRouter(tags=["investments"])
 SessionDep = Annotated[AsyncSession, Depends(get_db)]
 
 
-def _holding(holding: Any) -> dict[str, Any]:
+def _holding(holding: dict[str, Any]) -> dict[str, Any]:
     data = HoldingRead.model_validate(holding).model_dump(mode="json")
-    data["cost_subtotal"] = str(holdings.holding_cost(holding))
+    data["cost_subtotal"] = str(holding["cost_subtotal"])
     return data
+
+
+def _trade(trade: Any) -> dict[str, Any]:
+    return TradeRead.model_validate(trade).model_dump(mode="json")
 
 
 def _investment(
@@ -242,7 +246,67 @@ async def redeem_investment(
     return success_response(data)
 
 
-# ------------------------------------------------------------- holdings
+# ------------------------------------------------------------- trades (ledger)
+
+
+@router.get("/investments/{investment_id}/trades")
+async def list_trades(
+    session: SessionDep,
+    household: CurrentHousehold,
+    investment_id: uuid.UUID,
+) -> dict[str, Any]:
+    rows = await trades.list_trades(session, household, investment_id)
+    return success_response({"items": [_trade(row) for row in rows]})
+
+
+@router.post("/investments/{investment_id}/trades", status_code=status.HTTP_201_CREATED)
+async def create_trade(
+    session: SessionDep,
+    household: CurrentHousehold,
+    investment_id: uuid.UUID,
+    payload: TradeCreate,
+) -> dict[str, Any]:
+    trade = await trades.create_trade(session, household, investment_id, payload)
+    return success_response(_trade(trade))
+
+
+@router.delete("/investments/{investment_id}/trades/{trade_id}")
+async def delete_trade(
+    session: SessionDep,
+    household: CurrentHousehold,
+    investment_id: uuid.UUID,
+    trade_id: uuid.UUID,
+) -> dict[str, Any]:
+    await trades.delete_trade(session, household, investment_id, trade_id)
+    return success_response(message="Trade deleted")
+
+
+# ------------------------------------------------- holdings (computed view)
+
+
+@router.get("/investments/{investment_id}/positions")
+async def list_positions(
+    session: SessionDep,
+    household: CurrentHousehold,
+    investment_id: uuid.UUID,
+) -> dict[str, Any]:
+    """All symbols ever traded, incl. closed ones (quantity=0 + realized PnL)."""
+    investment = await service.get_investment(session, household.id, investment_id)
+    positions = await trades.positions(session, investment)
+    return success_response(
+        {
+            "items": [
+                {
+                    **p,
+                    "quantity": str(p["quantity"]),
+                    "cost_price": str(p["cost_price"]),
+                    "cost_subtotal": str(p["cost_subtotal"]),
+                    "realized_pnl": str(p["realized_pnl"]),
+                }
+                for p in positions
+            ]
+        }
+    )
 
 
 @router.get("/investments/{investment_id}/holdings")
@@ -258,40 +322,6 @@ async def list_holdings(
             "holdings_cost": str(holdings.total_cost(rows)),
         }
     )
-
-
-@router.post("/investments/{investment_id}/holdings", status_code=status.HTTP_201_CREATED)
-async def create_holding(
-    session: SessionDep,
-    household: CurrentHousehold,
-    investment_id: uuid.UUID,
-    payload: HoldingCreate,
-) -> dict[str, Any]:
-    holding = await holdings.create_holding(session, household, investment_id, payload)
-    return success_response(_holding(holding))
-
-
-@router.put("/investments/{investment_id}/holdings/{holding_id}")
-async def update_holding(
-    session: SessionDep,
-    household: CurrentHousehold,
-    investment_id: uuid.UUID,
-    holding_id: uuid.UUID,
-    payload: HoldingUpdate,
-) -> dict[str, Any]:
-    holding = await holdings.update_holding(session, household, investment_id, holding_id, payload)
-    return success_response(_holding(holding))
-
-
-@router.delete("/investments/{investment_id}/holdings/{holding_id}")
-async def delete_holding(
-    session: SessionDep,
-    household: CurrentHousehold,
-    investment_id: uuid.UUID,
-    holding_id: uuid.UUID,
-) -> dict[str, Any]:
-    await holdings.delete_holding(session, household, investment_id, holding_id)
-    return success_response(message="Holding deleted")
 
 
 @router.post("/investments/{investment_id}/refresh-value")

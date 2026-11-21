@@ -136,6 +136,48 @@ class InvestmentTransfer(Base):
     direction: Mapped[str] = mapped_column(String(10), nullable=False)
 
 
+class Trade(Base):
+    """Securities trade ledger entry. Append-only source of truth: positions,
+    average cost, and realized PnL are all derived from this table."""
+
+    __tablename__ = "trades"
+    __table_args__ = (
+        CheckConstraint("side IN ('buy', 'sell')", name="side_valid"),
+        CheckConstraint("quantity > 0", name="quantity_positive"),
+        CheckConstraint("price >= 0", name="price_non_negative"),
+        CheckConstraint("fee >= 0", name="fee_non_negative"),
+        CheckConstraint("market IN ('SH', 'SZ', 'HK', 'US')", name="market_valid"),
+        Index("ix_trades_household", "household_id"),
+        {"schema": "finance"},
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    household_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("core.households.id"), nullable=False
+    )
+    investment_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("finance.investments.id", ondelete="CASCADE"), nullable=False
+    )
+    market: Mapped[str] = mapped_column(String(10), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    fee: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False, default=Decimal("0"))
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
+    remark: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class Holding(Base):
     """Stock/fund position snapshot: market + symbol + quantity + cost."""
 

@@ -10,6 +10,10 @@ import type {
   ExchangeRate,
   Holding,
   HoldingsSummary,
+  PositionsSummary,
+  Trade,
+  TradesSummary,
+  TradeInput,
   Investment,
   InvestmentTag,
   Loan,
@@ -368,15 +372,12 @@ export const investmentsApi = {
     payload,
   ),
   holdings: (id: string) => get<HoldingsSummary>(`/investments/${id}/holdings`),
-  addHolding: (id: string, payload: HoldingInput) =>
-    post<Holding>(`/investments/${id}/holdings`, payload),
-  updateHolding: (
-    id: string,
-    holdingId: string,
-    payload: Partial<HoldingInput>,
-  ) => put<Holding>(`/investments/${id}/holdings/${holdingId}`, payload),
-  removeHolding: (id: string, holdingId: string) =>
-    remove(`/investments/${id}/holdings/${holdingId}`),
+  positions: (id: string) => get<PositionsSummary>(`/investments/${id}/positions`),
+  trades: (id: string) => get<TradesSummary>(`/investments/${id}/trades`),
+  addTrade: (id: string, payload: TradeInput) =>
+    post<Trade>(`/investments/${id}/trades`, payload),
+  removeTrade: (id: string, tradeId: string) =>
+    remove(`/investments/${id}/trades/${tradeId}`),
   refreshValue: (id: string) => post<RefreshValueResult>(`/investments/${id}/refresh-value`),
 };
 
