@@ -1,8 +1,9 @@
 """Net worth summary, daily snapshots, and monthly aggregation (2C-1)."""
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -172,6 +173,12 @@ async def test_investment_account_balance_counts_as_invested(
     assert summary["unmapped_cash"] == "500.00000000"
 
 
+def _household_today() -> str:
+    """The API derives 'today' from the household timezone (Asia/Shanghai),
+    not the runner's UTC clock — align the assertion or nightly CI flakes."""
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+
+
 async def test_snapshot_upsert_and_audit(
     db_client: AsyncClient,
     household_headers: dict[str, str],
@@ -184,7 +191,7 @@ async def test_snapshot_upsert_and_audit(
     assert created.status_code == 201, created.text
     snapshot = created.json()["data"]
     assert snapshot["net_worth"] == "1000.00000000"
-    assert snapshot["snapshot_date"] == date.today().isoformat()
+    assert snapshot["snapshot_date"] == _household_today()
 
     await _set_opening(db_client, household_headers, bank["id"], "1200")
     updated = await db_client.post("/api/v1/assets/snapshots", headers=household_headers)
@@ -264,7 +271,7 @@ async def test_snapshot_trend_and_monthly(
     )
     assert trend.status_code == 200
     dates = [item["snapshot_date"] for item in trend.json()["data"]["items"]]
-    assert dates == ["2026-09-30", "2026-10-15", "2026-10-31", date.today().isoformat()]
+    assert dates == ["2026-09-30", "2026-10-15", "2026-10-31", _household_today()]
 
     monthly = await db_client.get(
         "/api/v1/assets/snapshots/monthly?year=2026", headers=household_headers
