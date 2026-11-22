@@ -44,7 +44,13 @@ export function InvestmentsTab() {
   const [status, setStatus] = useState<StatusFilter>("");
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Investment | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("homeatlas.investments.expanded");
+    } catch {
+      return null;
+    }
+  });
 
   const list = useQuery({
     queryKey: ["investments", "tab", status],
@@ -128,7 +134,16 @@ export function InvestmentsTab() {
               tagNames={tagNames}
               expanded={expandedId === investment.id}
               onToggle={() =>
-                setExpandedId((current) => (current === investment.id ? null : investment.id))
+                setExpandedId((current) => {
+                  const next = current === investment.id ? null : investment.id;
+                  try {
+                    if (next) localStorage.setItem("homeatlas.investments.expanded", next);
+                    else localStorage.removeItem("homeatlas.investments.expanded");
+                  } catch {
+                    /* private mode etc. */
+                  }
+                  return next;
+                });
               }
               onEdit={() => {
                 setEditing(investment);
