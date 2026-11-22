@@ -723,9 +723,9 @@ async def test_trades_ledger_and_validations(
     )
     assert holdings.json()["data"]["holdings_cost"] == "172005.00000000"
     items = {item["symbol"]: item for item in holdings.json()["data"]["items"]}
-    assert items["600519"]["quantity"] == "100.00"
+    assert items["600519"]["quantity"] == "100.00000000"
     assert items["600519"]["cost_price"] == "1700.00000000"
-    assert items["000001"]["quantity"] == "200.00"
+    assert items["000001"]["quantity"] == "200.00000000"
     assert items["000001"]["cost_price"] == "10.02500000"  # (200*10+5)/200
 
     # Cannot sell more than the position.
@@ -748,7 +748,7 @@ async def test_trades_ledger_and_validations(
         f"/api/v1/investments/{stock['id']}/positions", headers=household_headers
     )
     by_symbol = {item["symbol"]: item for item in positions.json()["data"]["items"]}
-    assert by_symbol["600519"]["quantity"] == "50.00"
+    assert by_symbol["600519"]["quantity"] == "50.00000000"
     assert by_symbol["600519"]["cost_price"] == "1700.00000000"
     assert by_symbol["600519"]["realized_pnl"] == "15000.00000000"  # (2000-1700)*50
     assert by_symbol["600519"]["closed"] is False
@@ -794,7 +794,7 @@ async def test_trades_ledger_and_validations(
         if item["symbol"] == "600519"
     }["600519"]
     assert closed["closed"] is True
-    assert closed["quantity"] == "0.00"
+    assert Decimal(closed["quantity"]) == 0
     assert closed["realized_pnl"] == "20000.00000000"  # 15000 + (1800-1700)*50
 
     # Deleting a trade recomputes the ledger view.
@@ -807,12 +807,39 @@ async def test_trades_ledger_and_validations(
         f"/api/v1/investments/{stock['id']}/holdings", headers=household_headers
     )
     items = {item["symbol"]: item for item in holdings.json()["data"]["items"]}
-    assert items["600519"]["quantity"] == "50.00"
+    assert items["600519"]["quantity"] == "50.00000000"
 
     trades_list = await db_client.get(
         f"/api/v1/investments/{stock['id']}/trades", headers=household_headers
     )
     assert len(trades_list.json()["data"]["items"]) == 3
+
+
+async def test_fractional_share_quantity_precision(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    stock = await _investment(db_client, household_headers, name="碎股", investment_type="stock")
+
+    buy = await db_client.post(
+        f"/api/v1/investments/{stock['id']}/trades",
+        headers=household_headers,
+        json={
+            "side": "buy",
+            "market": "SH",
+            "symbol": "600519",
+            "quantity": "0.0009",
+            "price": "589.92",
+        },
+    )
+    assert buy.status_code == 201, buy.text
+    assert buy.json()["data"]["quantity"] == "0.00090000"
+
+    positions = await db_client.get(
+        f"/api/v1/investments/{stock['id']}/positions", headers=household_headers
+    )
+    by_symbol = {item["symbol"]: item for item in positions.json()["data"]["items"]}
+    assert Decimal(by_symbol["600519"]["quantity"]) == Decimal("0.0009")
+    assert Decimal(by_symbol["600519"]["quantity"]) != 0
 
 
 async def test_market_quotes_and_refresh_value(

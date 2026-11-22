@@ -80,7 +80,7 @@ async def create_trade(
         market=payload.market.value,
         symbol=symbol,
         side=payload.side.value,
-        quantity=quantize_amount(payload.quantity, currency.decimal_places),
+        quantity=quantize_amount(payload.quantity, 8),
         price=quantize_amount(payload.price, currency.decimal_places),
         fee=quantize_amount(payload.fee, currency.decimal_places),
         trade_date=trade_date,
@@ -156,9 +156,6 @@ async def positions(session: AsyncSession, investment: Investment) -> list[dict[
     (quantity == 0, realized_pnl kept). Fee accounting: buy fees are
     capitalized into cost basis; sell fees reduce realized proceeds.
     """
-    currency = await get_currency(session, str(investment.currency).strip())
-    dp = currency.decimal_places
-
     groups: dict[tuple[str, str], list[Trade]] = {}
     for t in await _investment_trades(session, investment.id):
         groups.setdefault((str(t.market).strip(), str(t.symbol).strip()), []).append(t)
@@ -186,7 +183,7 @@ async def positions(session: AsyncSession, investment: Investment) -> list[dict[
             {
                 "market": market,
                 "symbol": symbol,
-                "quantity": quantize_amount(qty, dp),
+                "quantity": quantize_amount(qty, 8),
                 "cost_price": avg_cost,
                 "cost_subtotal": quantize_money(qty * avg_cost),
                 "realized_pnl": quantize_money(realized),
