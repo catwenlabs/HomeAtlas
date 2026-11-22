@@ -473,10 +473,10 @@ async def test_new_account_fields_validation(
     assert bad_liquidity.status_code == 422
 
 
-async def test_account_type_locked_after_transactions(
+async def test_account_type_changeable_after_transactions(
     db_client: AsyncClient, household_headers: dict[str, str]
 ):
-    account = await _create_account(db_client, household_headers, name="锁定账户")
+    account = await _create_account(db_client, household_headers, name="可改类型账户")
     opening = await db_client.put(
         f"/api/v1/accounts/{account['id']}/opening-balance",
         headers=household_headers,
@@ -484,13 +484,15 @@ async def test_account_type_locked_after_transactions(
     )
     assert opening.status_code == 200, opening.text
 
-    locked = await db_client.put(
+    # History no longer locks account_type; a non-negative balance may move
+    # between non-credit types.
+    changed = await db_client.put(
         f"/api/v1/accounts/{account['id']}",
         headers=household_headers,
-        json={"account_type": "credit"},
+        json={"account_type": "wallet"},
     )
-    assert locked.status_code == 409
-    assert locked.json()["error_code"] == "ACCOUNT_TYPE_IMMUTABLE"
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["data"]["account_type"] == "wallet"
 
     # Metadata fields stay editable on an account with history.
     metadata_ok = await db_client.put(
@@ -500,6 +502,62 @@ async def test_account_type_locked_after_transactions(
     )
     assert metadata_ok.status_code == 200, metadata_ok.text
     assert metadata_ok.json()["data"]["annual_rate"] == "0.03000000"
+
+    # A negative balance blocks migration away from credit.
+    credit_account = await _create_account(
+        db_client, household_headers, name="负余额账户", account_type="credit"
+    )
+    negative = await db_client.put(
+        f"/api/v1/accounts/{credit_account['id']}/opening-balance",
+        headers=household_headers,
+        json={"amount": -100},
+    )
+    assert negative.status_code == 200, negative.text
+
+    rejected = await db_client.put(
+        f"/api/v1/accounts/{credit_account['id']}",
+        headers=household_headers,
+        json={"account_type": "bank"},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["error_code"] == "NEGATIVE_BALANCE_NOT_ALLOWED"
+
+
+async def test_account_type_bank_to_credit_migration(
+    db_client: AsyncClient,
+    db_app,
+    household_headers: dict[str, str],
+):
+    account = await _create_account(db_client, household_headers, name="迁移账户")
+    opening = await db_client.put(
+        f"/api/v1/accounts/{account['id']}/opening-balance",
+        headers=household_headers,
+        json={"amount": 100},
+    )
+    assert opening.status_code == 200, opening.text
+
+    response = await db_client.put(
+        f"/api/v1/accounts/{account['id']}",
+        headers=household_headers,
+        json={"account_type": "credit", "credit_limit": 10000},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["account_type"] == "credit"
+    assert data["credit_limit"] == "10000.00000000"
+
+    async with db_app.state.db_session_factory() as session:
+        audit = await session.scalar(
+            select(AuditLog)
+            .where(
+                AuditLog.action == "account.update",
+                AuditLog.entity_id == UUID(account["id"]),
+            )
+            .order_by(AuditLog.created_at.desc())
+        )
+    assert audit is not None
+    assert audit.after_data["old_account_type"] == "bank"
+    assert audit.after_data["new_account_type"] == "credit"
 
 
 async def test_account_type_changeable_without_history(

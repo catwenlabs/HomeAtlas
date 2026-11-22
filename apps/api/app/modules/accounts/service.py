@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import case, func, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import TransactionStatus, TransactionType
+from app.core.enums import AccountType, TransactionStatus, TransactionType
 from app.core.exceptions import AppError, NotFoundError
 from app.core.pagination import Pagination, resolve_sort
 from app.modules.accounts.models import Account, AccountBalance
@@ -19,6 +19,7 @@ from app.modules.accounts.schemas import (
     AccountUpdate,
     BalanceLine,
 )
+from app.modules.audit.service import write_audit
 from app.modules.currencies.service import get_currency
 from app.modules.transactions.models import Transaction
 from app.modules.transfers.models import Transfer
@@ -99,14 +100,18 @@ async def update_account(
 ) -> Account:
     account = await get_account(session, household_id, account_id)
     changes = payload.model_dump(exclude_unset=True)
+    old_account_type = account.account_type
+    account_type_changed = False
     if changes.get("currency") is not None:
         await get_currency(session, changes["currency"])
         account.currency = changes["currency"]
     if changes.get("account_type") is not None:
         new_type = changes["account_type"]
-        if new_type != account.account_type:
-            await _ensure_account_type_changeable(session, account)
-        account.account_type = new_type.value
+        if new_type.value != account.account_type:
+            if new_type != AccountType.CREDIT:
+                await _ensure_non_negative_balances(session, account)
+            account.account_type = new_type.value
+            account_type_changed = True
     if changes.get("name") is not None:
         account.name = changes["name"]
     if changes.get("is_active") is not None:
@@ -121,39 +126,32 @@ async def update_account(
         account.liquidity = changes["liquidity"].value if changes["liquidity"] else None
     if "credit_limit" in changes:
         account.credit_limit = changes["credit_limit"]
+    await session.flush()
+    if account_type_changed:
+        write_audit(
+            session,
+            household_id=household_id,
+            action="account.update",
+            entity_type="account",
+            entity_id=account.id,
+            after={
+                "old_account_type": old_account_type,
+                "new_account_type": account.account_type,
+            },
+        )
     await session.commit()
     await session.refresh(account)
     return account
 
 
-async def _ensure_account_type_changeable(session: AsyncSession, account: Account) -> None:
-    """Lock account_type once the account carries any history (H8)."""
-    transaction_count = (
-        await session.scalar(
-            select(func.count())
-            .select_from(Transaction)
-            .where(Transaction.account_id == account.id)
-        )
-        or 0
-    )
-    transfer_count = (
-        await session.scalar(
-            select(func.count())
-            .select_from(Transfer)
-            .where(
-                or_(
-                    Transfer.from_account_id == account.id,
-                    Transfer.to_account_id == account.id,
-                )
-            )
-        )
-        or 0
-    )
-    if transaction_count or transfer_count:
+async def _ensure_non_negative_balances(session: AsyncSession, account: Account) -> None:
+    """Reject moving a negative-balance account to a non-credit type."""
+    book = await _book_balances(session, account.id)
+    if any(balance < 0 for balance in book.values()):
         raise AppError(
-            "Account type cannot change after transactions or transfers exist",
+            "Account has a negative book balance; only credit accounts may overdraw",
             status_code=409,
-            error_code="ACCOUNT_TYPE_IMMUTABLE",
+            error_code="NEGATIVE_BALANCE_NOT_ALLOWED",
         )
 
 
