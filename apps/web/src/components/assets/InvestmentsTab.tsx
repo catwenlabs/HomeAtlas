@@ -143,7 +143,7 @@ export function InvestmentsTab() {
                     /* private mode etc. */
                   }
                   return next;
-                });
+                })
               }
               onEdit={() => {
                 setEditing(investment);
