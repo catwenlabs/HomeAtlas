@@ -796,3 +796,14 @@ PostgreSQL 数据优先放在可靠的本地 SSD 存储。备份放 Unraid，并
 | 2 | 还款转出账户限制：与卡同币种、非 investment 类型（保护托管本金不变量）、非卡自身；新增错误码 `REPAY_TARGET_NOT_CREDIT` / `REPAY_SOURCE_SAME` / `REPAY_SOURCE_INVESTMENT` / `REPAY_CURRENCY_MISMATCH`（400）；非本位币卡自动查汇率表折算（缺失 `EXCHANGE_RATE_NOT_FOUND`） | asset-design §8/§16 |
 | 3 | Web Accounts 页信用卡卡片新增「还款」入口：弹窗展示当前欠款并预填全额（支持部分/超额还款与溢缴款提示），成功后失效 accounts/statistics/transactions/transfers 缓存 | asset-design §16 |
 | 4 | 多币种记账 UI 补齐（纯前端，内核本已支持）：收支表单非本位币时必填汇率（`EXCHANGE_RATE_REQUIRED` 对应）；转账表单转出/转入币种可改且允许**同账户跨币种**（卡内购汇/结汇，同账户同币种仍拒绝），编辑转账时随载荷回传币种 | asset-design §16 |
+
+## 附录 E：v1.7 修订记录（2026-11-22，强制托管 + 逐笔交易账本）
+
+| # | 修订 | 来源 |
+| -- | -- | -- |
+| 1 | **投资强制托管，撤销附录 C 第 2 条的 managed / unmanaged 两态**：`finance.investments.account_id` 改为 NOT NULL 且必须为 active 的 investment 账户、币种与投资一致（`ACCOUNT_INACTIVE` / `INVESTMENT_ACCOUNT_INVALID`）；本金不得直接写入，只能来自 `fund_transfer`（同事务入金转账）或 `opening_position`（存量仓位按投资账户开账流水承载，二者互斥）。迁移 `0008_force_managed` 把历史 unmanaged 投资按（家庭, 币种）归集到一个投资账户并写入等额 `opening_balance`，净资产公式（账户余额 + `current_value` − `principal`）迁移前后不变。`INVESTMENT_ACCOUNT_REQUIRED` 随之移除，新增 `INVESTMENT_FUNDING_REQUIRED` / `INVESTMENT_FUNDING_CONFLICT` / `INVESTMENT_OPENING_INVALID`（422） | 用户需求（unmanaged 快照会与账本漂移）+ [asset-design.md](asset-design.md) §17 |
+| 2 | **§10 2C 的「证券交易」由暂缓转为落地，撤销附录 C 第 1 条的「逐笔交易/成本基准仍暂缓」**：新增 `finance.trades` append-only 逐笔交易账本（市场/代码/买卖/数量/价格/费用/交易日/来源/备注）；仓位数量、加权平均成本、成本小计与已实现盈亏一律由按时间顺序回放账本推导，**不落库**；买入费用资本化进成本基准，卖出费用冲减卖出收入。端点新增 `GET/POST /investments/{id}/trades`、`DELETE /investments/{id}/trades/{trade_id}`、`GET /investments/{id}/positions`（含已清仓标的：`quantity=0` + `realized_pnl`），**移除** `POST/PUT/DELETE /investments/{id}/holdings`；`GET /holdings` 保留原响应形状，退化为账本推导的在场仓位只读视图。迁移 `0009_trades_ledger` 把每条既有 holdings 回填为一笔 `source='opening'` 买入，`finance.holdings` 表保留但不再写入。**股息/分红仍暂缓** | 用户需求 + asset-design §17 |
+| 3 | 交易账本校验：仅 stock/fund（`TRADE_NOT_SUPPORTED`）、市场结算币种须与投资币种一致（`HOLDING_CURRENCY_MISMATCH`）、卖空拒绝但允许恰好清仓（`TRADE_INSUFFICIENT_POSITION`），均 422；审计 `investment.trade.create/delete`；删除交易即重算视图 | asset-design §17 |
+| 4 | 交易 `quantity` 精度定为 8 位小数（碎股，如基金份额 0.0009），对齐 `NUMERIC(24,8)` 与加权成本精度；`price` / `fee` 仍按币种 `decimal_places` 量化 | 实施缺陷修复 |
+| 5 | **账户类型不再一刀切锁定，撤销 §6.3 H8 收窄与 `ACCOUNT_TYPE_IMMUTABLE`**：已有流水/转账的账户也可改 `account_type`，但任一币种账面余额为负时禁止改为非 credit 类型（409 `NEGATIVE_BALANCE_NOT_ALLOWED`）；类型变更写审计（含新旧类型） | 用户需求 |
+| 6 | Web 部署修复：nginx SPA 回退去掉 `$uri/`（vite 的 `dist/assets/` 是真实目录，命中后把 `/assets` 路由 301 掉且丢端口，资产负债页刷新即白屏）；`index.html` 加 `Cache-Control: no-cache`，避免旧 bundle 打在已迁移的 API 上 | 实施缺陷修复 |

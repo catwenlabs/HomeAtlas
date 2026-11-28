@@ -7,7 +7,7 @@ PostgreSQL 17 是唯一业务事实来源。所有结构变更走 Alembic——�
 | schema | 表 |
 | -- | -- |
 | core | households / users / accounts / currencies / account_balances |
-| finance | categories / transactions / transfers |
+| finance | categories / transactions / transfers / exchange_rates / investments / investment_tags / investment_tag_links / investment_transfers / trades / holdings / loans / net_worth_snapshots |
 | system | audit_logs / import_batches / import_rows |
 
 - 基线迁移 `0001_initial` 创建三个 schema。
@@ -19,6 +19,20 @@ PostgreSQL 17 是唯一业务事实来源。所有结构变更走 Alembic——�
 - `0004_phase_2a_users` 创建 `core.users`（`household_id` 多对一、`username` 唯一、
   `password_hash`、`display_name`、`role`、`is_active`），并在确认无业务数据时
   清理旧版迁移遗留的默认家庭。
+- `0005_phase_2c_1` 创建 `finance.exchange_rates`（家庭作用域汇率表）与
+  `finance.net_worth_snapshots`（每日净资产快照）；`core.accounts` 扩展
+  `annual_rate` / `liquidity` / `credit_limit`，`account_type` 枚举加入
+  `credit` 与 `investment`。
+- `0006_phase_2c_2` 创建投资侧 5 张表：`finance.investments`、`investment_tags`、
+  `investment_tag_links`、`investment_transfers`（转账 ↔ 投资关联，保证冲正联动）、
+  `holdings`（持股快照）。
+- `0007_phase_2c_3` 创建 `finance.loans`（负债端）。
+- `0008_force_managed` 把 `investments.account_id` 改为 NOT NULL（强制托管）：
+  历史 unmanaged 投资按（家庭, 币种）归集到新建的投资账户，并写入等额
+  `opening_balance` 流水，净资产公式迁移前后不变。
+- `0009_trades_ledger` 创建 `finance.trades`（append-only 逐笔交易账本），并把每条
+  既有 `holdings` 回填为一笔 `source='opening'` 买入；`finance.holdings` 保留为
+  死表（API 不再写入，仓位改由账本回放推导），待后续清理版本删除。
 - **迁移不写入用户基础数据**：不再 seed 币种、默认家庭或分类。币种目录由代码
   `app/modules/currencies/defaults.py` 内置为向导预填项，分类目录同理；只有用户在
   首次部署向导中确认后才写入数据库。已有旧库升级后由 `POST /setup` 完成初始化；
@@ -58,6 +72,26 @@ PostgreSQL 17 是唯一业务事实来源。所有结构变更走 Alembic——�
   删除批次时行级联删除。
 - 导入文件级去重按 `(household_id, file_sha256)` 查询已完成/部分完成批次；
   行级去重不建唯一约束，在 Service 层按外部流水号、精确指纹与可选模糊匹配判断。
+- 账户：`account_type IN ('bank','cash','wallet','other','credit','investment')`；
+  `annual_rate` / `credit_limit` 非负、`liquidity IN ('none','T0','T1','T2','T3')`（均可空）。
+  类型自 2026-11-22 起可变，但任一币种账面余额为负时禁止改为非 credit 类型
+  （Service 校验，409 `NEGATIVE_BALANCE_NOT_ALLOWED`，变更写审计）。
+- 汇率：`rate > 0`、`base_currency <> quote_currency`、
+  `source IN ('manual','import','system')`，UNIQUE `(household_id, base_currency,
+  quote_currency, rate_date)`。
+- 净资产快照：UNIQUE `(household_id, snapshot_date)`——只接受当日 upsert，无历史补录路径。
+- 投资：`investment_type IN ('fixed','daily','fund','cash','stock','bond','other')`、
+  `principal >= 0`、`current_value >= 0`、`status IN ('active','redeemed')`；
+  `account_id` NOT NULL，且 Service 校验其为 active 的 investment 账户、币种与投资一致；
+  本金只能来自入金转账或开账仓位（不可直接写）。
+- 投资关联：`investment_transfers.transfer_id` UNIQUE、`direction IN ('fund','redeem')`；
+  `investment_tags` UNIQUE `(household_id, name)`。
+- 交易账本 `finance.trades`：`side IN ('buy','sell')`、`quantity > 0`、`price >= 0`、
+  `fee >= 0`、`market IN ('SH','SZ','HK','US')`，索引 `(household_id)`。append-only
+  （无更新端点，删除即重算）；仓位数量、加权平均成本与已实现盈亏由回放推导，不落库。
+- 持股 `finance.holdings`：UNIQUE `(investment_id, market, symbol)`；自 `0009` 起为只读死表。
+- 贷款：`principal > 0`、`annual_rate >= 0`、`due_day BETWEEN 1 AND 31`、
+  `remaining_principal >= 0` 且 `<= principal`、`status IN ('active','settled')`。
 
 ## 迁移命令
 

@@ -15,6 +15,10 @@
 | 2C-2 | 投资与标签、入金/赎回闭环、持股快照与行情估值 | ✅ 完成（Task 011） |
 | 2C-3 | 贷款与负债端 | ✅ 完成（Task 012） |
 | 2C-4 | Web：资产负债页、图表、到期提醒 | ✅ 完成（Task 013） |
+| 2C-5 | 强制托管：投资必须挂投资账户，本金只来自入金转账或开账仓位 | ✅ 完成（Task 014） |
+| 2C-6 | 信用卡还款端点 + 多币种记账 UI（汇率必填、卡内购汇/结汇） | ✅ 完成（Task 015） |
+| 2C-7 | 逐笔交易账本 `finance.trades`：仓位/加权成本/已实现盈亏回放推导、碎股 8dp | ✅ 完成（Task 016） |
+| 2C-8 | 账户类型可变（负余额守卫）、Web SPA 回退修复 | ✅ 完成（Task 016） |
 | 2D | Grafana | ⬜ 2C 之后 |
 | 2B-1 | 数据导入同步骨架：CSV 上传、映射、预览/去重、确认生成交易 | ✅ 完成（Task 007） |
 | 2B-3 | 数据导入增强：Excel、模板下载、模糊去重、批量行修正 | ✅ 完成（Task 008） |
@@ -544,4 +548,98 @@
 - 行情现价列为按需拉取（展开持股时查询，30s staleTime），无自动轮询。
 - 无浏览器自动化测试（E2E 待整体引入）。
 
-至此 **Phase 2C（1/2/3/4）全部完成**；剩余 2D（Grafana）与暂缓的 2B-2。
+至此 **Phase 2C（1/2/3/4）全部完成**；后续按用户实际记账反馈追加 2C-5 ~ 2C-8（Task 014–016，见下）。剩余 2D（Grafana）与暂缓的 2B-2。
+
+## Task 014（Phase 2C-5）已完成（2026-11-13）
+
+强制托管：取消 unmanaged 独立快照路径（**撤销规格附录 C 第 2 条**），
+所有投资必须挂在投资账户上，本金不再可直接写入。
+
+- `finance.investments.account_id` 改为 NOT NULL；本金只有两条合法来源：
+  - `fund_transfer`：同事务入金转账（`principal` 必须为 0，本金由转账金额构成）；
+  - `opening_position=true`：存量仓位、现金来源不可追溯时，按投资账户开账流水承载
+    （与 `fund_transfer` 互斥，`principal` 必须为正，可带 `opening_exchange_rate`）。
+- 迁移 `0008_force_managed`：历史 unmanaged 投资按（家庭, 币种）归集到一个
+  「投资账户（迁移）」，并写入等额 `opening_balance` 流水，使净资产公式
+  （账户余额 + `current_value` − `principal`）迁移前后不变；非本位币按汇率表最近记录折算。
+- 净资产口径收敛：本金由投资账户余额承载，总览只在其上叠加浮动盈亏，
+  消除 unmanaged 快照与账本漂移的风险。
+- 错误码：新增 `INVESTMENT_FUNDING_REQUIRED` / `INVESTMENT_FUNDING_CONFLICT` /
+  `INVESTMENT_OPENING_INVALID`（422）；`account_id` 必须是 active 的 investment
+  账户且币种与投资一致（否则 `ACCOUNT_INACTIVE` 409 / `INVESTMENT_ACCOUNT_INVALID` 422）；
+  `INVESTMENT_ACCOUNT_REQUIRED` 随 unmanaged 取消而移除。
+- Web：建仓表单改为必选投资账户 + 入金/开账双路径；Accounts 页账户类型下拉补
+  credit / investment 并支持信用额度字段；`scripts/seed_demo.py` 同步更新。
+- 同批 Web 打磨（`c997f97`）：列表请求对齐 API `page_size ≤ 100`（修 422）、
+  浮动/已实现盈亏率展示、A 股红涨绿跌约定、资产金额统一两位小数。
+
+### Phase 2C-5 已知边界
+
+- 迁移生成的「投资账户（迁移）」需用户自行改名或合并。
+- `opening_position` 路径不产生转账，该笔本金在现金侧无对应流水（与迁移语义一致）。
+
+## Task 015（Phase 2C-6）已完成（2026-11-17）
+
+信用卡还款与多币种记账 UI（规格附录 D / v1.6）。
+
+- `POST /accounts/{id}/repay`：还款组合为转账内核上的一笔普通已确认、`fee=0`
+  转账（默认描述「信用卡还款」），**无 schema 变更**，冲正复用
+  `POST /transfers/{id}/reverse`；审计另记 `account.repay`（含还款前后余额）。
+  实现位于 `accounts/flows.py::execute_repay`（`resolve_terms` + `persist_transfer`）。
+- 限制与错误码（400）：转出账户须同币种、非 investment 类型、非卡自身
+  （`REPAY_TARGET_NOT_CREDIT` / `REPAY_SOURCE_SAME` / `REPAY_SOURCE_INVESTMENT` /
+  `REPAY_CURRENCY_MISMATCH`）；非本位币卡自动查汇率表折算（缺失
+  `EXCHANGE_RATE_NOT_FOUND`）；允许超额还款与零欠款还款（溢缴款计为现金）。
+- Web：Accounts 页信用卡卡片新增「还款」入口，弹窗预填全额欠款并提示溢缴款口径，
+  成功后失效 accounts / statistics / transactions / transfers 缓存。
+- 多币种记账 UI（纯前端，内核本已支持）：收支表单在非本位币时展示并必填汇率
+  （对应 `EXCHANGE_RATE_REQUIRED`，本位币不发送汇率，draft 编辑回传已存汇率）；
+  转账表单新增转出/转入币种选择，**同账户跨币种**即卡内购汇/结汇，同账户同币种
+  前端拦截；编辑转账随载荷回传两侧币种，修复静默重置为账户默认币种。
+- 测试：新增 `tests/test_accounts_repay.py`（16 项）。
+
+### Phase 2C-6 已知边界
+
+- 无账单周期 / 最低还款额概念，还款就是一笔转账；溢缴款仅体现为 credit 账户正余额。
+
+## Task 016（Phase 2C-7 / 2C-8）已完成（2026-11-21 ~ 11-22）
+
+逐笔交易账本 + 账户类型守卫 + 碎股精度 + Web 修复（规格附录 E / v1.7）。
+
+- **交易账本**：新增 `finance.trades`（append-only：市场/代码/买卖/数量/价格/费用/
+  交易日/来源/备注，含 side、数量>0、价格与费用≥0、市场枚举等 CHECK 与
+  household 索引）。仓位数量、加权平均成本、成本小计与已实现盈亏**全部由按
+  `trade_date, created_at` 顺序回放账本计算，不落库**；买入费用资本化进成本基准，
+  卖出费用冲减卖出收入。
+- **端点变化**：新增 `GET/POST /investments/{id}/trades`、
+  `DELETE /investments/{id}/trades/{trade_id}`、`GET /investments/{id}/positions`
+  （含已清仓标的：`quantity=0` + `realized_pnl`）；**移除**
+  `POST/PUT/DELETE /investments/{id}/holdings`；`GET /holdings` 保留原响应形状，
+  改为账本推导的在场仓位只读视图，`refresh-value` 同样基于推导仓位。
+- **校验**：仅 stock/fund（`TRADE_NOT_SUPPORTED` 422）；市场结算币种须与投资币种
+  一致（`HOLDING_CURRENCY_MISMATCH` 422）；卖空拒绝（`TRADE_INSUFFICIENT_POSITION`
+  422，允许恰好清仓）；投资须 active。审计 `investment.trade.create/delete`；
+  删除交易即重算视图。
+- 迁移 `0009_trades_ledger`：每条既有 `finance.holdings` 回填为一笔
+  `source='opening'` 的买入；`finance.holdings` 表保留但 API 不再写入。
+- **碎股**：`quantity` 量化由币种精度改为 8 位小数（对齐 `NUMERIC(24,8)` 与加权成本
+  精度），修复碎股（如 0.0009）被取整为 0 而触发正数约束；`price` / `fee` 仍按币种精度。
+- **账户类型可变（2C-8）**：撤销 `ACCOUNT_TYPE_IMMUTABLE` 一刀切（H8 收窄），
+  改为语义守卫——有历史流水/转账也可改类型，但任一币种账面余额为负时禁止改为
+  非 credit 类型（409 `NEGATIVE_BALANCE_NOT_ALLOWED`）；类型变更写审计（新旧类型）。
+- **Web**：HoldingForm → TradeForm（买卖/价格/费用/日期）+ 交易历史列表（逐笔删除）
+  + 已清仓已实现盈亏汇总；展开行状态持久化；nginx SPA 回退去掉 `$uri/`
+  （`dist/assets/` 是真实目录，命中后把 `/assets` 路由 301 掉且丢端口，导致资产负债页
+  刷新白屏），并给 index.html 加 `no-cache`。
+- 验证：CI 全绿（run `44990970037`）——**189 项测试通过，覆盖率 96.05%**，
+  ruff / mypy strict / 前端 build / 容器构建与 GHCR 发布均通过。
+
+### Phase 2C-7 / 2C-8 已知边界
+
+- `finance.holdings` 成为死表（API 不再写入，保留待后续清理版本删除）。
+- 股息 / 分红仍未建模（附录 C 的暂缓项不变）。
+- 交易账本不与现金侧联动：买卖不生成转账或流水，卖出回笼的现金不会自动回到账户
+  余额；本金仍只由入金转账 / 开账仓位承载，`current_value` 需 `refresh-value`
+  或手工估值更新。
+- 已实现盈亏只在 `/positions` 呈现，未并入统计 API 的收支口径。
+- 无券商对账单导入，无行情自动采集（仍为按需拉取 + 30s 缓存）。

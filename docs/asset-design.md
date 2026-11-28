@@ -411,12 +411,12 @@ daily_interest_expense = Σ active 贷款 remaining_principal×annual_rate/365
 | EXCHANGE_RATE_VALUE_INVALID | 422 | rate ≤ 0 / base=quote（**不占用** transactions 已有的 EXCHANGE_RATE_INVALID=400） |
 | EXCHANGE_RATE_DUPLICATE | 409 | 同 household+币对+日期重复录入 |
 | CREDIT_LIMIT_EXCEEDED | 409 | credit 透支超额度 |
-| ACCOUNT_TYPE_IMMUTABLE | 409 | 已有流水/转账的账户禁改 `account_type`（实施新增，承载 §6.3 H8 收窄） |
+| ~~ACCOUNT_TYPE_IMMUTABLE~~ | — | **已移除（2026-11-22）**：改为语义守卫 `NEGATIVE_BALANCE_NOT_ALLOWED`，见 §17.4 |
 | LOAN_NOT_FOUND / NOT_EDITABLE / NOT_DELETABLE / ALREADY_SETTLED | 404/409/409/409 | |
 | INVESTMENT_NOT_FOUND / NOT_EDITABLE / NOT_DELETABLE / ALREADY_REDEEMED | 404/409/409/409 | |
-| INVESTMENT_ACCOUNT_REQUIRED | 409 | fund/redeem 作用于 unmanaged 投资（实施新增：无托管账户） |
-| HOLDING_NOT_FOUND / DUPLICATE | 404/409 | 持股不存在 / 仓位重复（实施新增） |
-| HOLDING_NOT_SUPPORTED / CURRENCY_MISMATCH | 422/422 | 非 stock/fund 投资 / 市场币种与投资币种不符（实施新增） |
+| ~~INVESTMENT_ACCOUNT_REQUIRED~~ | — | **已移除（2026-11-13）**：unmanaged 路径取消，所有投资强制托管，见 §17.1 |
+| HOLDING_NOT_FOUND | 404 | 无在场仓位可供估值（`refresh-value`）；~~HOLDING_DUPLICATE~~ 随持仓写入端点移除而作废 |
+| ~~HOLDING_NOT_SUPPORTED~~ / HOLDING_CURRENCY_MISMATCH | —/422 | 非 stock/fund 投资改由 `TRADE_NOT_SUPPORTED` 承载；市场币种与投资币种不符仍用本码（见 §17.2） |
 | QUOTE_PROVIDER_ERROR | 502 | 行情源失败/返回异常（details 带失败代码清单；实施新增） |
 | TAG_DUPLICATE | 409 | 同家庭标签重名（实施新增） |
 | INVESTMENT_HAS_TRANSFERS | 409 | 删除时存在未冲正关联转账 |
@@ -426,7 +426,7 @@ daily_interest_expense = Σ active 贷款 remaining_principal×annual_rate/365
 | TAG_IN_USE / TAG_NOT_FOUND | 409/404 | |
 | LOAN_REMAINING_INVALID | 422 | PUT 时 remaining_principal > principal（实施新增） |
 | TRANSFER_LINKED_TO_INVESTMENT | 409 | 冲正入金转账会使 principal < 0 |
-| SNAPSHOT_DATE_INVALID | 422 | 补录历史日期 |
+| ~~SNAPSHOT_DATE_INVALID~~ | — | **未实施**：快照端点只接受当日（POST 无日期入参），无补录路径 |
 
 复用：`ACCOUNT_INACTIVE`、`INSUFFICIENT_BALANCE`、`BASE_EXCHANGE_RATE_REQUIRED`。
 
@@ -438,6 +438,18 @@ daily_interest_expense = Σ active 贷款 remaining_principal×annual_rate/365
 | REPAY_SOURCE_SAME | 400 | 转出账户即该信用卡本身 |
 | REPAY_SOURCE_INVESTMENT | 400 | 转出账户是 investment 类型（保护托管本金不变量） |
 | REPAY_CURRENCY_MISMATCH | 400 | 转出账户与卡币种不一致（v1 仅同币种） |
+
+强制托管与交易账本（2026-11-13 ~ 11-22 实施新增，详见 §17）：
+
+| 错误码 | HTTP | 触发 |
+| -- | -- | -- |
+| NEGATIVE_BALANCE_NOT_ALLOWED | 409 | 任一币种账面余额为负时把 `account_type` 改为非 credit（取代 ACCOUNT_TYPE_IMMUTABLE） |
+| INVESTMENT_FUNDING_REQUIRED | 422 | 建仓既无 `fund_transfer` 也未声明 `opening_position`，却带 principal/current_value > 0 |
+| INVESTMENT_FUNDING_CONFLICT | 422 | `fund_transfer` 与 `opening_position` 同时给出 |
+| INVESTMENT_OPENING_INVALID | 422 | `opening_position` 但 principal ≤ 0 |
+| TRADE_NOT_FOUND | 404 | 交易不存在或不属于该投资 |
+| TRADE_NOT_SUPPORTED | 422 | 在非 stock/fund 投资上记交易 |
+| TRADE_INSUFFICIENT_POSITION | 422 | 卖出数量超过当前仓位（允许恰好清仓） |
 
 ## 9. Web UI 规划（2C-4）
 
@@ -513,6 +525,9 @@ spec §10 的 2C 范围经本设计实质调整（证券交易/股息/持仓明�
 
 ## 15. 2C-2 实施增补（2026-11-14）
 
+> **注（2026-11-22）**：本节第 1 条的「加仓/减仓与移动加权成本核算仍暂缓」
+> 与第 3 条的 unmanaged 独立快照路径已被下文 §17 取代。
+
 用户需求驱动的范围调整（原 §2.2 暂缓项部分提前）：
 
 1. **持股快照提前**：新增 `finance.holdings`（市场/代码/数量/**成本单价**），
@@ -554,3 +569,72 @@ spec §10 的 2C 范围经本设计实质调整（证券交易/股息/持仓明�
    转账表单新增转出/转入币种选择（默认跟随账户），允许**同账户跨币种**
    转账即卡内购汇/结汇（内核既有行为，同账户同币种仍返回
    `TRANSFER_SOURCE_SAME`），编辑转账随载荷显式回传两侧币种。
+
+## 17. 强制托管与逐笔交易账本（2026-11-13 ~ 11-22）
+
+用户实际记账反馈驱动的两轮范围调整：**§15 第 1 条（持仓快照 + 加权成本暂缓）
+与第 3 条（unmanaged 推荐路径）由本节取代**。
+
+### 17.1 投资强制托管（取代 §15.3）
+
+- 动因：unmanaged 独立快照与现金账本无关联，`principal` / `current_value`
+  可与实际资金漂移，净资产出现两条互不相通的来源。
+- 定案：`investments.account_id` NOT NULL，必须是 active 的 investment 账户
+  且币种与投资一致；本金只有两条来源——`fund_transfer`（同事务入金转账，
+  `principal` 记 0，本金由转账金额构成）或 `opening_position=true`（存量仓位、
+  现金来源不可追溯，按投资账户开账流水承载，`principal` 必须为正，可带
+  `opening_exchange_rate`），二者互斥。
+- 净资产公式不变但来源收敛：投资账户余额承载本金，总览只在其上叠加浮动盈亏。
+- 迁移 `0008_force_managed`：历史 unmanaged 投资按（家庭, 币种）归集到一个
+  「投资账户（迁移）」，并写入等额 `opening_balance` 流水（非本位币按汇率表
+  最近记录折算），保证迁移前后净资产不变。
+- `PUT /investments/{id}` 只改元数据，本金不可直接编辑。
+
+### 17.2 逐笔交易账本（取代 §15.1 的暂缓项）
+
+- `finance.trades` 为 append-only 事实来源：market / symbol / side / quantity /
+  price / fee / trade_date / source / remark；CHECK 约束 `side ∈ (buy, sell)`、
+  `quantity > 0`、`price ≥ 0`、`fee ≥ 0`、`market ∈ (SH, SZ, HK, US)`。
+- 仓位数量、加权平均成本、成本小计与已实现盈亏全部由按
+  `trade_date, created_at` 顺序回放账本推导，**不落库**；买入费用资本化进成本
+  基准，卖出费用冲减卖出收入，卖出按当前加权成本结转已实现盈亏。
+- 仓位允许归零（已清仓）并保留历史：`GET /positions` 返回全部交易过的标的
+  （含 `closed=true` 与 `realized_pnl`），`GET /holdings` 只返回在场仓位，
+  且响应形状与账本化之前一致（Web 兼容层）。
+- 端点：`POST/GET /investments/{id}/trades`、`DELETE .../trades/{trade_id}`
+  （删除即重算视图）、`GET .../positions`；**`POST/PUT/DELETE .../holdings` 移除**。
+- 校验：仅 stock/fund（`TRADE_NOT_SUPPORTED`）；市场结算币种须与投资币种一致
+  （`HOLDING_CURRENCY_MISMATCH`，沿用 SH/SZ→CNY、HK→HKD、US→USD 绑定）；
+  卖空拒绝但允许恰好清仓（`TRADE_INSUFFICIENT_POSITION`）；投资须 active。
+- 精度：`quantity` 8 位小数（碎股 / 基金份额），`price` / `fee` 按币种
+  `decimal_places`。
+- 迁移 `0009_trades_ledger`：每条既有 holdings 回填为一笔 `source='opening'`
+  买入（`trade_date` 取 holdings 创建日），使推导仓位与原快照一致；
+  `finance.holdings` 保留为死表，待后续清理版本删除。
+- 审计：`investment.trade.create` / `investment.trade.delete`
+  （含市场/代码/方向/数量/价格/费用/日期）。
+
+### 17.3 账本与现金侧的边界（本版有意不联动）
+
+交易只描述证券侧仓位，**不生成转账或收支流水**：卖出回笼的现金不会自动进入
+任何账户，买入也不会自动扣款。本金仍由 §17.1 的入金转账 / 开账仓位承载，
+`current_value` 由 `refresh-value`（行情）或手工估值更新。因此已实现盈亏目前
+只在 `/positions` 呈现，未并入统计 API 的收支口径；若要让卖出回笼现金入账，
+需要一个「卖出 → 转账」的组合端点（待需求明确再做，避免与手续费/赎回损益
+口径重复计收支）。
+
+### 17.4 账户类型可变（撤销 §6.3 H8 收窄）
+
+- 原 `ACCOUNT_TYPE_IMMUTABLE`（有流水/转账即锁类型）过严：信用卡误建为 bank
+  后无法纠正。
+- 改为语义守卫：类型可改，但**任一币种账面余额为负时禁止改为非 credit 类型**
+  （409 `NEGATIVE_BALANCE_NOT_ALLOWED`）——透支只有 credit 账户被允许；
+  改为 credit 不受限。
+- 变更写审计 `account.update`（含 `old_account_type` / `new_account_type`）。
+
+### 17.5 Web 部署修复
+
+- nginx SPA 回退由 `try_files $uri $uri/ /index.html` 改为
+  `try_files $uri /index.html`：vite 的 `dist/assets/` 是真实目录，`$uri/`
+  命中后把 `/assets` **路由** 301 到目录（并丢掉端口），资产负债页刷新即白屏。
+- `index.html` 响应加 `Cache-Control: no-cache`，避免浏览器用旧 bundle 打已迁移的 API。
