@@ -137,36 +137,24 @@ async def _investment_trades(session: AsyncSession, investment_id: UUID) -> list
     )
 
 
-async def position_quantity(
-    session: AsyncSession, investment_id: UUID, market: str, symbol: str
-) -> Decimal:
-    """Current net quantity for one symbol (buys minus sells)."""
-    trades = await _investment_trades(session, investment_id)
-    qty = ZERO
-    for t in trades:
-        if t.market == market and t.symbol == symbol:
-            qty += t.quantity if t.side == "buy" else -t.quantity
-    return qty
-
-
-async def positions(session: AsyncSession, investment: Investment) -> list[dict[str, Any]]:
-    """Replay all trades into per-symbol positions (weighted-average cost).
+def replay_positions(trades_list: list[Trade]) -> list[dict[str, Any]]:
+    """Replay trades into per-symbol positions (weighted-average cost).
 
     Returns every symbol ever traded, including fully closed ones
     (quantity == 0, realized_pnl kept). Fee accounting: buy fees are
     capitalized into cost basis; sell fees reduce realized proceeds.
     """
     groups: dict[tuple[str, str], list[Trade]] = {}
-    for t in await _investment_trades(session, investment.id):
+    for t in trades_list:
         groups.setdefault((str(t.market).strip(), str(t.symbol).strip()), []).append(t)
 
     result: list[dict[str, Any]] = []
-    for (market, symbol), trades in groups.items():
+    for (market, symbol), symbol_trades in groups.items():
         qty = ZERO
         cost_basis = ZERO  # total cost of currently open quantity (fees included)
         avg_cost = ZERO
         realized = ZERO
-        for t in trades:
+        for t in symbol_trades:
             if t.side == "buy":
                 total_in = quantize_money(t.quantity * t.price + t.fee)
                 new_qty = qty + t.quantity
@@ -188,12 +176,50 @@ async def positions(session: AsyncSession, investment: Investment) -> list[dict[
                 "cost_subtotal": quantize_money(qty * avg_cost),
                 "realized_pnl": quantize_money(realized),
                 "closed": qty == 0,
-                "trade_count": len(trades),
+                "trade_count": len(symbol_trades),
                 "remark": None,
             }
         )
     result.sort(key=lambda p: (p["market"], p["symbol"]))
     return result
+
+
+async def position_quantity(
+    session: AsyncSession, investment_id: UUID, market: str, symbol: str
+) -> Decimal:
+    """Current net quantity for one symbol (buys minus sells)."""
+    trades = await _investment_trades(session, investment_id)
+    qty = ZERO
+    for t in trades:
+        if t.market == market and t.symbol == symbol:
+            qty += t.quantity if t.side == "buy" else -t.quantity
+    return qty
+
+
+async def positions(session: AsyncSession, investment: Investment) -> list[dict[str, Any]]:
+    """Replay all trades for one investment into per-symbol positions."""
+    return replay_positions(await _investment_trades(session, investment.id))
+
+
+async def batch_positions(
+    session: AsyncSession, investment_ids: list[UUID]
+) -> dict[UUID, list[dict[str, Any]]]:
+    """Replay trades for multiple investments in one DB round-trip."""
+    if not investment_ids:
+        return {}
+    rows = list(
+        (
+            await session.scalars(
+                select(Trade)
+                .where(Trade.investment_id.in_(investment_ids))
+                .order_by(Trade.trade_date.asc(), Trade.created_at.asc())
+            )
+        ).all()
+    )
+    by_investment: dict[UUID, list[Trade]] = {}
+    for trade in rows:
+        by_investment.setdefault(trade.investment_id, []).append(trade)
+    return {inv_id: replay_positions(inv_trades) for inv_id, inv_trades in by_investment.items()}
 
 
 def total_cost(rows: list[dict[str, Any]]) -> Decimal:

@@ -8,7 +8,7 @@ import {
   RefreshCw,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ApiError } from "../../api/client";
 import { investmentsApi, investmentTagsApi, marketApi } from "../../api/endpoints";
@@ -18,6 +18,7 @@ import {
   cn,
   decimalInput,
   formatDate,
+  formatQuantity,
   money,
   pnlClass,
   pnlPercent,
@@ -39,18 +40,29 @@ const TYPE_LABELS: Record<string, string> = {
 
 type StatusFilter = "" | "active" | "matured" | "redeemed";
 
-export function InvestmentsTab() {
+export function InvestmentsTab({ initialExpandedId }: { initialExpandedId?: string }) {
   const queryClient = useQueryClient();
   const [status, setStatus] = useState<StatusFilter>("");
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Investment | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(() => {
+    if (initialExpandedId) return initialExpandedId;
     try {
       return localStorage.getItem("homeatlas.investments.expanded");
     } catch {
       return null;
     }
   });
+
+  useEffect(() => {
+    if (!initialExpandedId) return;
+    setExpandedId(initialExpandedId);
+    try {
+      localStorage.setItem("homeatlas.investments.expanded", initialExpandedId);
+    } catch {
+      /* private mode etc. */
+    }
+  }, [initialExpandedId]);
 
   const list = useQuery({
     queryKey: ["investments", "tab", status],
@@ -457,7 +469,7 @@ function InvestmentRow({
                         <tr key={holding.id} className="border-b border-slate-50">
                           <td className="py-2 pr-4 text-slate-500">{holding.market}</td>
                           <td className="py-2 pr-4 font-mono text-slate-800">{holding.symbol}</td>
-                          <td className="py-2 pr-4">{Number(holding.quantity).toLocaleString()}</td>
+                          <td className="py-2 pr-4">{formatQuantity(holding.quantity)}</td>
                           <td className="py-2 pr-4">{amount(holding.cost_price)}</td>
                           <td className="py-2 pr-4">
                             {quote ? (

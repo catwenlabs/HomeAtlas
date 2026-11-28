@@ -11,6 +11,15 @@ export function amount(value: string | number | null | undefined): string {
   });
 }
 
+export function formatQuantity(value: string | number | null | undefined): string {
+  const number = Number(value ?? 0);
+  if (!Number.isFinite(number)) return "—";
+  return number.toLocaleString("zh-CN", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 8,
+  });
+}
+
 export function money(value: string | number | null | undefined, currency = "CNY"): string {
   const formatted = amount(value);
   return formatted === "—" ? `— ${currency}` : `${formatted} ${currency}`;

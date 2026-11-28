@@ -7,19 +7,23 @@ fetches quotes for those positions. The response shape is unchanged so
 the web layer keeps working.
 """
 
+from collections import defaultdict
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import NAMESPACE_OID, UUID, uuid5
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import InvestmentStatus
 from app.core.exceptions import AppError
 from app.core.money import quantize_money
 from app.modules.audit.service import write_audit
 from app.modules.investments import flows
 from app.modules.investments import service as investment_service
 from app.modules.investments import trades as trade_service
+from app.modules.investments.models import Investment
 from app.modules.market import service as market_service
 from app.modules.market.provider import quote_key
 
@@ -63,6 +67,62 @@ def holding_cost(row: dict[str, Any]) -> Decimal:
 
 def total_cost(rows: list[dict[str, Any]]) -> Decimal:
     return quantize_money(sum((holding_cost(row) for row in rows), Decimal("0")))
+
+
+async def list_household_holdings(session: AsyncSession, household: Any) -> dict[str, Any]:
+    """All open holdings across active stock/fund investments in the household."""
+    investments = list(
+        (
+            await session.scalars(
+                select(Investment)
+                .where(
+                    Investment.household_id == household.id,
+                    Investment.status != InvestmentStatus.REDEEMED.value,
+                    Investment.investment_type.in_(trade_service.HOLDING_TYPES),
+                )
+                .order_by(Investment.created_at.asc())
+            )
+        ).all()
+    )
+    positions_by_inv = await trade_service.batch_positions(session, [inv.id for inv in investments])
+    now = datetime.now(UTC)
+    items: list[dict[str, Any]] = []
+    cost_by_currency: dict[str, Decimal] = defaultdict(Decimal)
+
+    for inv in investments:
+        currency = str(inv.currency).strip()
+        for p in positions_by_inv.get(inv.id, []):
+            if p["closed"]:
+                continue
+            cost_by_currency[currency] += p["cost_subtotal"]
+            items.append(
+                {
+                    "id": _position_id(inv.id, p["market"], p["symbol"]),
+                    "investment_id": inv.id,
+                    "investment_name": inv.name,
+                    "investment_type": inv.investment_type,
+                    "account_id": inv.account_id,
+                    "currency": currency,
+                    "market": p["market"],
+                    "symbol": p["symbol"],
+                    "quantity": p["quantity"],
+                    "cost_price": p["cost_price"],
+                    "cost_subtotal": p["cost_subtotal"],
+                    "remark": p["remark"],
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+
+    items.sort(key=lambda row: (-row["cost_subtotal"], row["market"], row["symbol"]))
+    return {
+        "items": items,
+        "cost_by_currency": {
+            currency: quantize_money(amount)
+            for currency, amount in sorted(cost_by_currency.items())
+        },
+        "stock_investment_count": len(investments),
+    }
 
 
 async def refresh_value(

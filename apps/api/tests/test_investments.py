@@ -1011,3 +1011,109 @@ async def test_cross_currency_redeem_uses_rate_table(
     assert len(pnl_rows) == 1
     assert pnl_rows[0]["transaction_type"] == "income"
     assert pnl_rows[0]["base_amount"] == "72.00000000"  # 10 USD pnl * 7.2
+
+
+async def test_household_holdings_aggregation(
+    db_client: AsyncClient, household_headers: dict[str, str]
+):
+    # Empty state before any stock/fund investments exist.
+    empty = await db_client.get("/api/v1/holdings", headers=household_headers)
+    assert empty.status_code == 200, empty.text
+    assert empty.json()["data"] == {
+        "items": [],
+        "cost_by_currency": {},
+        "stock_investment_count": 0,
+    }
+
+    # Add CNY stock, HKD stock, USD fund, and a non-stock fixed investment.
+    cn_stock = await _investment(
+        db_client, household_headers, name="A股账户", investment_type="stock", currency="CNY"
+    )
+    hk_stock = await _investment(
+        db_client, household_headers, name="港股账户", investment_type="stock", currency="HKD"
+    )
+    us_fund = await _investment(
+        db_client, household_headers, name="美股指数", investment_type="fund", currency="USD"
+    )
+    await _investment(
+        db_client, household_headers, name="三年定期", investment_type="fixed", currency="CNY"
+    )
+
+    # Stock investments exist, but no trades yet.
+    no_trades = await db_client.get("/api/v1/holdings", headers=household_headers)
+    assert no_trades.status_code == 200
+    assert no_trades.json()["data"]["items"] == []
+    assert no_trades.json()["data"]["stock_investment_count"] == 3
+
+    # Record trades: 2 open CN stocks (one closed later), 1 HK stock, 1 fractional US fund.
+    for inv_id, payload in (
+        (
+            cn_stock["id"],
+            {"side": "buy", "market": "SH", "symbol": "600519", "quantity": "100", "price": "1500"},
+        ),
+        (
+            cn_stock["id"],
+            {"side": "buy", "market": "SZ", "symbol": "000001", "quantity": "200", "price": "10"},
+        ),
+        (
+            cn_stock["id"],
+            {"side": "sell", "market": "SZ", "symbol": "000001", "quantity": "200", "price": "12"},
+        ),
+        (
+            hk_stock["id"],
+            {"side": "buy", "market": "HK", "symbol": "00700", "quantity": "200", "price": "350"},
+        ),
+        (
+            us_fund["id"],
+            {"side": "buy", "market": "US", "symbol": "VOO", "quantity": "0.5", "price": "500"},
+        ),
+    ):
+        resp = await db_client.post(
+            f"/api/v1/investments/{inv_id}/trades", headers=household_headers, json=payload
+        )
+        assert resp.status_code == 201, resp.text
+
+    res = await db_client.get("/api/v1/holdings", headers=household_headers)
+    assert res.status_code == 200, res.text
+    data = res.json()["data"]
+    assert data["stock_investment_count"] == 3
+    assert data["cost_by_currency"] == {
+        "CNY": "150000.00000000",
+        "HKD": "70000.00000000",
+        "USD": "250.00000000",
+    }
+
+    by_symbol = {item["symbol"]: item for item in data["items"]}
+    assert set(by_symbol.keys()) == {"600519", "00700", "VOO"}  # closed 000001 excluded
+    assert by_symbol["600519"]["investment_name"] == "A股账户"
+    assert by_symbol["600519"]["investment_type"] == "stock"
+    assert by_symbol["600519"]["currency"] == "CNY"
+    assert by_symbol["00700"]["investment_name"] == "港股账户"
+    assert by_symbol["VOO"]["investment_type"] == "fund"
+    assert Decimal(by_symbol["VOO"]["quantity"]) == Decimal("0.5")
+
+    # Redeeming an investment excludes its holdings from the household summary.
+    cash = await _create_account(db_client, household_headers, name="美元现金", currency="USD")
+    await db_client.post(
+        "/api/v1/exchange-rates",
+        headers=household_headers,
+        json={
+            "base_currency": "USD",
+            "quote_currency": "CNY",
+            "rate": "7.2",
+            "rate_date": TODAY.isoformat(),
+        },
+    )
+    redeemed = await db_client.post(
+        f"/api/v1/investments/{us_fund['id']}/redeem",
+        headers=household_headers,
+        json={"to_account_id": cash["id"], "to_amount": "260"},
+    )
+    assert redeemed.status_code == 200, redeemed.text
+
+    after_redeem = await db_client.get("/api/v1/holdings", headers=household_headers)
+    assert after_redeem.status_code == 200
+    after_data = after_redeem.json()["data"]
+    assert after_data["stock_investment_count"] == 2
+    assert {item["symbol"] for item in after_data["items"]} == {"600519", "00700"}
+    assert "USD" not in after_data["cost_by_currency"]

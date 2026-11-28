@@ -404,6 +404,19 @@ export interface HoldingsSummary {
   holdings_cost: string;
 }
 
+export interface HouseholdHolding extends Holding {
+  investment_name: string;
+  investment_type: "stock" | "fund";
+  account_id: string;
+  currency: string;
+}
+
+export interface HouseholdHoldingsSummary {
+  items: HouseholdHolding[];
+  cost_by_currency: Record<string, string>;
+  stock_investment_count: number;
+}
+
 export type TradeSide = "buy" | "sell";
 
 export interface Trade {

@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ArrowDownLeft, ArrowUpRight, Landmark, Scale, TrendingUp, Wallet } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Scale, TrendingUp, Wallet } from "lucide-react";
 
 import { ApiError } from "../api/client";
 import { assetsApi, statisticsApi, transactionsApi } from "../api/endpoints";
-import type { Transaction } from "../api/types";
+import type { AssetsSummary, Transaction } from "../api/types";
+import { AccountDistributionCard } from "../components/dashboard/AccountDistributionCard";
+import { HoldingsCard } from "../components/dashboard/HoldingsCard";
 import {
   Badge,
   Card,
@@ -36,6 +38,11 @@ export function DashboardPage() {
     queryKey: ["transactions", "recent"],
     queryFn: () =>
       transactionsApi.list({ page_size: 6, sort_by: "transaction_date", sort_order: "desc" }),
+  });
+  const assetsSummary = useQuery({
+    queryKey: ["assets", "summary"],
+    queryFn: assetsApi.summary,
+    retry: false,
   });
 
   const base = overview.data?.base_currency ?? household?.base_currency ?? "CNY";
@@ -96,7 +103,9 @@ export function DashboardPage() {
         </div>
       ) : null}
 
-      <NetWorthStrip base={base} />
+      <NetWorthStrip base={base} summary={assetsSummary.data} error={assetsSummary.error} />
+
+      <HoldingsCard base={base} fxRates={assetsSummary.data?.fx_rates_used} />
 
       <div className="mt-6 grid gap-6 lg:grid-cols-5">
         <Card className="lg:col-span-3">
@@ -137,32 +146,12 @@ export function DashboardPage() {
         </Card>
 
         <div className="space-y-6 lg:col-span-2">
-          <Card>
-            <CardHeader title="资产分布" description="按各账户记账币种汇总" />
-            {balances.isLoading ? (
-              <Spinner />
-            ) : balances.isError ? (
-              <div className="p-5">
-                <ErrorBanner message={errorMessage(balances.error)} />
-              </div>
-            ) : balances.data && balances.data.balances.length ? (
-              <ul className="divide-y divide-ink/6">
-                {balances.data.balances.map((item) => (
-                  <li key={item.currency} className="flex items-center justify-between px-5 py-3.5">
-                    <span className="flex items-center gap-2 text-sm text-ink/70">
-                      <Landmark className="h-4 w-4 text-ink/35" />
-                      {item.currency}
-                    </span>
-                    <span className="text-sm font-medium text-ink">
-                      {money(item.book_balance, item.currency)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <EmptyState title="暂无账户余额" description="创建账户并设置期初余额后显示。" />
-            )}
-          </Card>
+          <AccountDistributionCard
+            data={balances.data}
+            isLoading={balances.isLoading}
+            isError={balances.isError}
+            error={balances.error}
+          />
 
           <Card className="p-5">
             <h2 className="text-sm font-semibold text-ink">快速入口</h2>
@@ -260,13 +249,16 @@ function QuickLink({ to, label }: { to: string; label: string }) {
   );
 }
 
-function NetWorthStrip({ base }: { base: string }) {
+function NetWorthStrip({
+  base,
+  summary,
+  error,
+}: {
+  base: string;
+  summary?: AssetsSummary;
+  error: unknown;
+}) {
   const queryClient = useQueryClient();
-  const summary = useQuery({
-    queryKey: ["assets", "summary"],
-    queryFn: assetsApi.summary,
-    retry: false,
-  });
   const recordSnapshot = useMutation({
     mutationFn: assetsApi.createSnapshot,
     onSuccess: () => {
@@ -274,13 +266,12 @@ function NetWorthStrip({ base }: { base: string }) {
     },
   });
 
-  const error = summary.error;
   if (error instanceof ApiError && error.code === "EXCHANGE_RATE_NOT_FOUND") {
     return (
       <Card className="mt-6 border-amber-200 bg-amber-50 p-4">
         <p className="text-sm text-amber-800">
           净资产暂无法折算：缺少汇率。前往{" "}
-          <Link to="/assets" className="font-medium underline">
+          <Link to="/assets" search={{ tab: "rates" }} className="font-medium underline">
             资产负债 · 汇率
           </Link>{" "}
           补录缺失币对后即可查看。
@@ -288,20 +279,20 @@ function NetWorthStrip({ base }: { base: string }) {
       </Card>
     );
   }
-  if (!summary.data) return null;
+  if (!summary) return null;
 
-  const maturedCount = summary.data.matured_investments.length;
+  const maturedCount = summary.matured_investments.length;
 
   return (
     <Card className="mt-6 flex flex-wrap items-center gap-4 p-4">
       <div className="min-w-0 flex-1">
         <p className="text-xs font-medium text-ink/45">家庭净资产</p>
         <p className="mt-1 text-2xl font-semibold tracking-tight text-ink">
-          {money(summary.data.net_worth, base)}
+          {money(summary.net_worth, base)}
         </p>
         <p className="mt-1 text-xs text-ink/40">
-          闲置 {money(summary.data.buckets.idle, base)} · 理财中{" "}
-          {money(summary.data.buckets.invested, base)} · 负债 {money(summary.data.total_liabilities, base)}
+          闲置 {money(summary.buckets.idle, base)} · 理财中{" "}
+          {money(summary.buckets.invested, base)} · 负债 {money(summary.total_liabilities, base)}
           {maturedCount > 0 ? ` · ${maturedCount} 笔已到期未赎回` : ""}
         </p>
       </div>

@@ -176,6 +176,13 @@ class HoldingRead(BaseModel):
     updated_at: datetime
 
 
+class HouseholdHoldingRead(HoldingRead):
+    investment_name: str
+    investment_type: str
+    account_id: UUID
+    currency: str
+
+
 class TagCreate(BaseModel):
     name: Annotated[str, Field(min_length=1, max_length=50)]
     color: Annotated[str | None, Field(pattern=r"^#[0-9A-Fa-f]{6}$")] = None

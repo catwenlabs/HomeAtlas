@@ -101,9 +101,24 @@ const transfersRoute = createRoute({
   component: TransfersPage,
 });
 
+export type AssetsTab = "overview" | "investments" | "loans" | "rates";
+
+const VALID_ASSETS_TABS = new Set<string>(["overview", "investments", "loans", "rates"]);
+
 const assetsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/assets",
+  validateSearch: (search: Record<string, unknown>): { tab?: AssetsTab; investment?: string } => {
+    const rawTab = typeof search.tab === "string" ? search.tab : undefined;
+    const rawInvestment =
+      typeof search.investment === "string" && search.investment.trim()
+        ? search.investment
+        : undefined;
+    return {
+      tab: rawTab && VALID_ASSETS_TABS.has(rawTab) ? (rawTab as AssetsTab) : undefined,
+      investment: rawInvestment,
+    };
+  },
   component: AssetsPage,
 });
 

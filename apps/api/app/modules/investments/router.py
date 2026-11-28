@@ -15,6 +15,7 @@ from app.modules.investments import holdings, service, tags, trades
 from app.modules.investments.models import Investment
 from app.modules.investments.schemas import (
     HoldingRead,
+    HouseholdHoldingRead,
     InvestmentCreate,
     InvestmentFund,
     InvestmentRead,
@@ -36,6 +37,12 @@ SessionDep = Annotated[AsyncSession, Depends(get_db)]
 
 def _holding(holding: dict[str, Any]) -> dict[str, Any]:
     data = HoldingRead.model_validate(holding).model_dump(mode="json")
+    data["cost_subtotal"] = str(holding["cost_subtotal"])
+    return data
+
+
+def _household_holding(holding: dict[str, Any]) -> dict[str, Any]:
+    data = HouseholdHoldingRead.model_validate(holding).model_dump(mode="json")
     data["cost_subtotal"] = str(holding["cost_subtotal"])
     return data
 
@@ -305,6 +312,24 @@ async def list_positions(
                 }
                 for p in positions
             ]
+        }
+    )
+
+
+@router.get("/holdings")
+async def list_household_holdings(
+    session: SessionDep,
+    household: CurrentHousehold,
+) -> dict[str, Any]:
+    """Open stock/fund holdings across all active investments in the household."""
+    result = await holdings.list_household_holdings(session, household)
+    return success_response(
+        {
+            "items": [_household_holding(row) for row in result["items"]],
+            "cost_by_currency": {
+                currency: str(amount) for currency, amount in result["cost_by_currency"].items()
+            },
+            "stock_investment_count": result["stock_investment_count"],
         }
     )
 
